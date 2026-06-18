@@ -343,6 +343,14 @@
       z-index: 1;
       background: var(--ink-soft);
     }
+    .data-table th small {
+      display: block;
+      margin-top: 2px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 600;
+      line-height: 1.25;
+    }
     .system-variant {
       margin-top: 14px;
       border: 1px solid var(--line);
@@ -1400,10 +1408,15 @@
         <summary>${esc(title)} (${table.rows.length})</summary>
         <div class="data-table">
           <table>
-            <thead><tr><th>Row</th>${table.columns.map((column) => `<th>${esc(column.label)}</th>`).join("")}</tr></thead>
+            <thead><tr><th>#</th>${table.columns.map((column) => `
+              <th>
+                <span>${esc(column.label)}</span>
+                ${column.unit ? `<small>Unit: ${esc(column.unit)}</small>` : ""}
+              </th>
+            `).join("")}</tr></thead>
             <tbody>${table.rows.map((row) => `
               <tr>
-                <td>${esc(row.row)}</td>
+                <td>${esc(Number.isFinite(Number(row.row)) ? Number(row.row) + 1 : row.row)}</td>
                 ${table.columns.map((column) => `<td>${esc(row.values[column.key] ?? "")}</td>`).join("")}
               </tr>
             `).join("")}</tbody>

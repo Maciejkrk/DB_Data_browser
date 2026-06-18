@@ -114,6 +114,10 @@ def attr_label(attr_def: dict | None, attr_id: int) -> str:
     return str(attr_def.get("DispName") or attr_def.get("AttributeName") or attr_id)
 
 
+def attr_is_deleted(attr_def: dict | None) -> bool:
+    return bool((attr_def or {}).get("deleted") or (attr_def or {}).get("IsDeleted"))
+
+
 def product_name_attribute_ids(attrs: dict[int, dict], models_payload: dict) -> list[int]:
     models = models_payload.get("models") or []
     product_model_ids = {
@@ -280,6 +284,8 @@ def fetch_remote_asset(url: str) -> tuple[bytes, str]:
 def table_parent_ids(attr_defs: dict[int, dict], fallback_ids: list[int], names: tuple[str, ...]) -> list[int]:
     parent_ids = []
     for attr_id, attr_def in attr_defs.items():
+        if attr_is_deleted(attr_def):
+            continue
         attr_type = str(attr_def.get("AttributeType") or "").lower()
         text = " ".join(str(attr_def.get(key) or "") for key in ("AttributeName", "DispName")).lower()
         is_sot = bool(attr_def.get("SOTFlag")) or any(name in text for name in names)
@@ -289,6 +295,39 @@ def table_parent_ids(attr_defs: dict[int, dict], fallback_ids: list[int], names:
         if fallback_id not in parent_ids:
             parent_ids.append(fallback_id)
     return parent_ids
+
+
+def table_model_columns(attr_defs: dict[int, dict], parent_ids: list[int]) -> list[dict]:
+    columns = []
+    seen = set()
+    for parent_id in parent_ids:
+        parent_def = attr_defs.get(parent_id)
+        target_model_id = parent_def.get("TargetModelId") if parent_def else None
+        if not target_model_id:
+            continue
+        candidates = []
+        for attr_id, attr_def in attr_defs.items():
+            if attr_is_deleted(attr_def):
+                continue
+            if attr_def.get("ProductModelId") != target_model_id:
+                continue
+            if str(attr_def.get("AttributeType") or "").lower() == "table_model":
+                continue
+            candidates.append((int(attr_def.get("DisplayOrder") or 0), attr_id, attr_def))
+        for _, attr_id, attr_def in sorted(candidates):
+            key = str(attr_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            columns.append(
+                {
+                    "key": key,
+                    "label": attr_label(attr_def, attr_id),
+                    "unit": attr_def.get("Unit") or "",
+                    "attribute_id": attr_id,
+                }
+            )
+    return columns
 
 
 def find_attribute_ids(attr_defs: dict[int, dict], names: tuple[str, ...], types: tuple[str, ...] = (), fallback_ids: list[int] | None = None) -> list[int]:
@@ -427,6 +466,26 @@ def rows_as_table(rows: list[dict]) -> dict:
     }
 
 
+def rows_as_model_table(rows: list[dict], model_columns: list[dict]) -> dict:
+    ad_hoc_columns: dict[str, dict] = {}
+    table_rows = []
+    for row in rows:
+        values = {}
+        for item in row.get("values") or []:
+            attr_id = item.get("attribute_id")
+            key = str(attr_id or item.get("attribute_name") or "")
+            if not key:
+                continue
+            if not any(column["key"] == key for column in model_columns):
+                ad_hoc_columns.setdefault(key, {"key": key, "label": str(item.get("label") or key), "unit": ""})
+            values[key] = item.get("value")
+        table_rows.append({"row": row.get("row"), "hash": row.get("hash"), "values": values})
+    return {
+        "columns": [*model_columns, *ad_hoc_columns.values()],
+        "rows": table_rows,
+    }
+
+
 class PimData:
     def __init__(self, data_dir: Path) -> None:
         self.data_dir = data_dir
@@ -439,6 +498,7 @@ class PimData:
         self.color_groups = load_json(data_dir / "colorGroups.json").get("colorGroups", []) if (data_dir / "colorGroups.json").exists() else []
         self.product_name_attribute_ids = product_name_attribute_ids(self.product_attr_defs, self.product_models)
         self.sot_parent_ids = table_parent_ids(self.product_attr_defs, [276], ("typoszereg", "series of types", "sot"))
+        self.sot_columns = table_model_columns(self.product_attr_defs, self.sot_parent_ids)
         self.element_schema = {
             "variant_parent_ids": find_attribute_ids(self.element_attr_defs, ("variant", "wariant"), ("model_array",), [283]),
             "layer_parent_ids": find_attribute_ids(self.element_attr_defs, ("layer", "warstw"), ("model_array",), [285]),
@@ -523,7 +583,7 @@ class PimData:
                 "documents": document_rows,
                 "document_table": rows_as_table(document_rows),
                 "sot": sot_rows,
-                "sot_table": rows_as_table(sot_rows),
+                "sot_table": rows_as_model_table(sot_rows, self.sot_columns),
                 "media": file_media(latest_version),
                 "color_links": self.product_color_links(latest_version),
             }
