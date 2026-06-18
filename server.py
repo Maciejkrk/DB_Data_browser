@@ -252,6 +252,13 @@ class PimData:
         self.element_index = {int(element["Id"]): element for element in self.elements}
         self.color_index = {int(color["Id"]): color for color in self.colors}
         self.color_group_index = {int(group["Id"]): group for group in self.color_groups}
+        self.color_group_members: dict[int, list[int]] = {}
+        for group in self.color_groups:
+            group_id = int(group["Id"])
+            version = (group.get("dataVersions") or [{}])[-1]
+            for color_id in version.get("colorList") or []:
+                self.color_group_members.setdefault(int(color_id), []).append(group_id)
+        self.product_color_usage = self.build_product_color_usage()
 
     def summary(self) -> dict:
         return {
@@ -322,9 +329,74 @@ class PimData:
                 "sot": sot_rows,
                 "sot_table": rows_as_table(sot_rows),
                 "media": file_media(latest_version),
+                "color_links": self.product_color_links(latest_version),
             }
         )
         return result
+
+    def build_product_color_usage(self) -> dict[str, list[dict]]:
+        usage: dict[str, list[dict]] = {}
+        for product in self.products:
+            product_id = int(product["Id"])
+            product_name_value = product_name(product, self.product_attr_defs)
+            version = (product.get("dataVersions") or [{}])[-1]
+            for item in version.get("colorsAttributes") or []:
+                element_id = item.get("ElementId")
+                element_type = item.get("ElementTypeId")
+                attribute_id = item.get("AttributeId")
+                if element_id is None:
+                    continue
+                key = f"{element_type}:{element_id}"
+                usage.setdefault(key, []).append(
+                    {
+                        "product_id": product_id,
+                        "product_name": product_name_value,
+                        "relation": "structure" if attribute_id == 296 else "color_group" if attribute_id == 297 else "color",
+                    }
+                )
+                if element_type == 2:
+                    group = self.color_group_index.get(int(element_id))
+                    if not group:
+                        continue
+                    version_group = (group.get("dataVersions") or [{}])[-1]
+                    for color_id in version_group.get("colorList") or []:
+                        usage.setdefault(f"1:{int(color_id)}", []).append(
+                            {
+                                "product_id": product_id,
+                                "product_name": product_name_value,
+                                "relation": "via_group",
+                                "group_id": int(element_id),
+                                "group_name": self.color_group_name(int(element_id)),
+                            }
+                        )
+        for key, items in usage.items():
+            seen = set()
+            unique = []
+            for item in items:
+                marker = (item.get("product_id"), item.get("relation"), item.get("group_id"))
+                if marker in seen:
+                    continue
+                seen.add(marker)
+                unique.append(item)
+            usage[key] = unique
+        return usage
+
+    def product_color_links(self, version: dict) -> dict:
+        structures = []
+        groups = []
+        for item in version.get("colorsAttributes") or []:
+            element_id = item.get("ElementId")
+            if element_id is None:
+                continue
+            if item.get("AttributeId") == 296 or item.get("ElementTypeId") == 1:
+                color = self.color_index.get(int(element_id))
+                if color:
+                    structures.append(self.color_detail(int(element_id), compact=True))
+            elif item.get("AttributeId") == 297 or item.get("ElementTypeId") == 2:
+                group_id = int(element_id)
+                group = self.color_group_detail(group_id, compact=True)
+                groups.append(group)
+        return {"structures": structures, "groups": groups}
 
     def product_features(self, rows: list[dict]) -> list[dict]:
         features = []
@@ -390,29 +462,50 @@ class PimData:
             "rgb": rgb,
             "thumbnail": thumbnail or main_texture,
             "media": media,
+            "used_by_products": self.product_color_usage.get(f"1:{color_id}", []),
+            "groups": [
+                {"id": group_id, "name": self.color_group_name(group_id)}
+                for group_id in self.color_group_members.get(color_id, [])
+            ],
         }
         if compact:
             return result
         result["parameters"] = [{"name": key, "value": value} for key, value in params.items()]
         return result
 
+    def color_group_name(self, group_id: int) -> str:
+        group = self.color_group_index.get(group_id)
+        if not group:
+            return f"Grupa {group_id}"
+        version = (group.get("dataVersions") or [{}])[-1]
+        params = version_parameters(version)
+        return str(params.get("name") or f"Grupa {group_id}")
+
+    def color_group_detail(self, group_id: int, compact: bool = False) -> dict:
+        group = self.color_group_index[group_id]
+        version = (group.get("dataVersions") or [{}])[-1]
+        params = version_parameters(version)
+        media = parameter_media(version)
+        color_ids = [int(color_id) for color_id in version.get("colorList") or []]
+        result = {
+            "id": group_id,
+            "name": str(params.get("name") or f"Grupa {group_id}"),
+            "description": str(params.get("description") or ""),
+            "count": len(color_ids),
+            "color_ids": color_ids,
+            "sample_colors": [self.color_detail(color_id, compact=True) for color_id in color_ids[:12] if color_id in self.color_index],
+            "media": media,
+            "used_by_products": self.product_color_usage.get(f"2:{group_id}", []),
+        }
+        if not compact:
+            result["parameters"] = [{"name": key, "value": value} for key, value in params.items()]
+            result["colors"] = [self.color_detail(color_id, compact=True) for color_id in color_ids if color_id in self.color_index]
+        return result
+
     def list_color_groups(self) -> dict:
         items = []
         for group in self.color_groups:
-            version = (group.get("dataVersions") or [{}])[-1]
-            params = version_parameters(version)
-            media = parameter_media(version)
-            color_ids = version.get("colorList") or []
-            items.append(
-                {
-                    "id": int(group["Id"]),
-                    "name": str(params.get("name") or f"Grupa {group['Id']}"),
-                    "description": str(params.get("description") or ""),
-                    "count": len(color_ids),
-                    "color_ids": color_ids,
-                    "media": media,
-                }
-            )
+            items.append(self.color_group_detail(int(group["Id"]), compact=True))
         return {"items": items}
 
     def system_detail(self, element_id: int, compact: bool = False) -> dict:
@@ -592,6 +685,8 @@ def make_handler(data: PimData):
                     payload = data.color_detail(int(unquote(parsed.path.rsplit("/", 1)[-1])))
                 elif parsed.path == "/api/color-groups":
                     payload = data.list_color_groups()
+                elif parsed.path.startswith("/api/color-groups/"):
+                    payload = data.color_group_detail(int(unquote(parsed.path.rsplit("/", 1)[-1])))
                 else:
                     self.send_json({"error": "Not found"}, status=404)
                     return
@@ -661,6 +756,8 @@ def make_store_handler(store: DataStore):
                     payload = self.ready_data().color_detail(int(unquote(parsed.path.rsplit("/", 1)[-1])))
                 elif parsed.path == "/api/color-groups":
                     payload = self.ready_data().list_color_groups()
+                elif parsed.path.startswith("/api/color-groups/"):
+                    payload = self.ready_data().color_group_detail(int(unquote(parsed.path.rsplit("/", 1)[-1])))
                 else:
                     self.send_json({"error": "Not found"}, status=404)
                     return

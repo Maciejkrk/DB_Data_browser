@@ -282,6 +282,87 @@
       background: var(--ink-soft);
       font-size: 12px;
     }
+    .color-gallery {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+      gap: 12px;
+    }
+    .color-tile {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      overflow: hidden;
+      background: #fff;
+      text-align: left;
+    }
+    .color-tile:hover {
+      border-color: var(--accent);
+      box-shadow: 0 4px 14px rgba(15, 23, 42, .12);
+    }
+    .color-tile button {
+      width: 100%;
+      display: block;
+      padding: 0;
+      text-align: left;
+      background: #fff;
+      color: var(--text);
+      font-weight: 400;
+    }
+    .color-tile img,
+    .color-tile .swatch {
+      width: 100%;
+      aspect-ratio: 1 / 1;
+      object-fit: cover;
+    }
+    .color-tile-body {
+      padding: 9px;
+    }
+    .relation-list {
+      display: grid;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .relation-item {
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: var(--ink-soft);
+    }
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      padding: 18px;
+      background: rgba(15, 23, 42, .48);
+      z-index: 20;
+    }
+    .modal-backdrop[hidden] { display: none; }
+    .modal {
+      width: min(1040px, 96vw);
+      max-height: 92vh;
+      overflow: auto;
+      border-radius: 8px;
+      background: var(--panel);
+      box-shadow: 0 18px 60px rgba(15, 23, 42, .28);
+    }
+    .modal-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      background: var(--ink-soft);
+    }
+    .modal-head h2 { margin: 0; }
+    .modal-close {
+      width: auto;
+      padding: 8px 10px;
+      border-radius: 4px;
+      background: var(--secondary);
+      color: #fff;
+    }
+    .modal-body { padding: 14px; }
     .muted { color: var(--muted); }
     .warn { color: var(--danger); }
     .import-panel {
@@ -328,28 +409,37 @@
 <body>
   <header>
     <h1>DB Data Browser</h1>
-    <div id="summary" class="summary">Ładowanie danych...</div>
-    <button id="changeSourceBtn" class="source-button" type="button">Zmień pliki wsadowe</button>
+    <div id="summary" class="summary">Loading data...</div>
+    <button id="changeSourceBtn" class="source-button" type="button">Change source files</button>
   </header>
   <main>
     <aside>
       <div class="toolbar">
         <div class="tabs">
-          <button id="productsTab" class="active" type="button">Produkty</button>
-          <button id="systemsTab" type="button">Systemy</button>
-          <button id="colorsTab" type="button">Kolory</button>
+          <button id="productsTab" class="active" type="button">Products</button>
+          <button id="systemsTab" type="button">Systems</button>
+          <button id="colorsTab" type="button">Colors</button>
         </div>
-        <input id="searchInput" type="search" placeholder="Szukaj po nazwie, kategorii, typie...">
+        <input id="searchInput" type="search" placeholder="Search by name, category, type...">
         <select id="categorySelect"></select>
       </div>
       <div id="list" class="list"></div>
     </aside>
     <section>
       <div id="detail" class="content">
-        <div class="muted">Wybierz rekord z listy po lewej stronie.</div>
+        <div class="muted">Select a record from the list on the left.</div>
       </div>
     </section>
   </main>
+  <div id="modalBackdrop" class="modal-backdrop" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <div class="modal-head">
+        <h2 id="modalTitle">Details</h2>
+        <button id="modalCloseBtn" class="modal-close" type="button">Close</button>
+      </div>
+      <div id="modalBody" class="modal-body"></div>
+    </div>
+  </div>
   <script>
     const state = { mode: "products", items: [], selectedId: null, categories: [] };
     const REQUIRED_FILES = [
@@ -374,7 +464,7 @@
     async function api(path) {
       const response = await fetch(path);
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Błąd odczytu danych");
+      if (!response.ok) throw new Error(data.error || "Data read error");
       return data;
     }
 
@@ -401,39 +491,39 @@
 
     function renderImport(status) {
       $("summary").innerHTML = `
-        <span class="pill">Źródło danych nie jest jeszcze wczytane</span>
+        <span class="pill">Data source is not loaded yet</span>
         <span class="pill">${esc(status.data_dir)}</span>
       `;
       $("list").innerHTML = "";
       $("detail").innerHTML = `
         <div class="import-panel">
-          <h2>Import danych PIM</h2>
-          <div class="muted">Wgraj pliki JSON z eksportu PIM. Pliki możesz zaznaczyć wszystkie naraz albo dodawać po kolei.</div>
+          <h2>PIM Data Import</h2>
+          <div class="muted">Upload JSON files exported from PIM. You can select all files at once or add them one by one.</div>
           <div class="import-list">
             ${(status.files || []).map((file) => `
               <div class="import-file">
                 <strong>${esc(file.name)}</strong>
-                <span class="${file.exists ? "" : "warn"}">${file.exists ? `OK (${Math.round(file.size / 1024)} KB)` : "brak"}</span>
+                <span class="${file.exists ? "" : "warn"}">${file.exists ? `OK (${Math.round(file.size / 1024)} KB)` : "missing"}</span>
               </div>
             `).join("")}
           </div>
           <div class="import-actions">
             <input id="sourceFilesInput" type="file" accept=".json" multiple>
-            <button id="uploadSourceFilesBtn" type="button">Wgraj pliki</button>
+            <button id="uploadSourceFilesBtn" type="button">Upload files</button>
           </div>
-          <div id="uploadStatus" class="muted">Do działania przeglądarki wymagane są co najmniej: ${esc((status.missing_core || []).join(", ") || "komplet podstawowy jest gotowy")}.</div>
+          <div id="uploadStatus" class="muted">Required core files: ${esc((status.missing_core || []).join(", ") || "core file set is ready")}.</div>
         </div>
       `;
       $("uploadSourceFilesBtn").addEventListener("click", uploadSourceFiles);
     }
 
     async function changeSourceFiles() {
-      const ok = window.confirm("Czy wyczyścić aktualnie wgrane pliki wsadowe i przejść do importu nowego zestawu JSON?");
+      const ok = window.confirm("Clear the currently uploaded source files and import a new JSON set?");
       if (!ok) return;
       const response = await fetch("/api/source/clear", { method: "POST" });
       const data = await response.json();
       if (!response.ok) {
-        $("detail").innerHTML = `<div class="warn">${esc(data.error || "Nie udało się wyczyścić plików.")}</div>`;
+        $("detail").innerHTML = `<div class="warn">${esc(data.error || "Could not clear source files.")}</div>`;
         return;
       }
       state.items = [];
@@ -445,18 +535,18 @@
       const input = $("sourceFilesInput");
       const status = $("uploadStatus");
       if (!input.files.length) {
-        status.textContent = "Wybierz pliki JSON do wgrania.";
+        status.textContent = "Select JSON files to upload.";
         return;
       }
       const body = new FormData();
       for (const file of input.files) {
         body.append("files", file, file.name);
       }
-      status.textContent = "Wgrywanie plików...";
+      status.textContent = "Uploading files...";
       const response = await fetch("/api/source/upload", { method: "POST", body });
       const data = await response.json();
       if (!response.ok) {
-        status.textContent = data.error || "Nie udało się wgrać plików.";
+        status.textContent = data.error || "Could not upload files.";
         return;
       }
       if (data.ready) {
@@ -469,10 +559,10 @@
     async function loadSummary() {
       const summary = await api("/api/summary");
       $("summary").innerHTML = `
-        <span class="pill">Produkty: ${esc(summary.products)}</span>
-        <span class="pill">Systemy: ${esc(summary.systems)}</span>
-        <span class="pill">Kolory/tekstury: ${esc(summary.colors || 0)}</span>
-        <span class="pill">Źródło: ${esc(summary.data_dir)}</span>
+        <span class="pill">Products: ${esc(summary.products)}</span>
+        <span class="pill">Systems: ${esc(summary.systems)}</span>
+        <span class="pill">Colors/textures: ${esc(summary.colors || 0)}</span>
+        <span class="pill">Source: ${esc(summary.data_dir)}</span>
       `;
     }
 
@@ -482,10 +572,12 @@
       const url = state.mode === "products"
         ? `/api/products?q=${query}&category=${filter}`
         : state.mode === "colors"
-          ? `/api/colors?q=${query}&kind=${filter}`
+          ? `/api/color-groups`
           : `/api/systems?q=${query}`;
       const data = await api(url);
-      state.items = data.items || [];
+      state.items = state.mode === "colors"
+        ? (data.items || []).filter((item) => !query || `${item.name} ${item.description || ""}`.toLowerCase().includes(decodeURIComponent(query).toLowerCase()))
+        : data.items || [];
       if (state.mode === "products") {
         state.categories = data.categories || [];
       } else if (state.mode === "colors") {
@@ -493,19 +585,21 @@
       }
       renderFilterOptions();
       renderList();
-      $("detail").innerHTML = `<div class="muted">Znaleziono ${state.items.length} rekordów. Wybierz pozycję z listy.</div>`;
+      $("detail").innerHTML = state.mode === "colors"
+        ? `<div class="muted">Select a color group from the list on the left.</div>`
+        : `<div class="muted">Found ${state.items.length} records. Select an item from the list.</div>`;
     }
 
     function renderFilterOptions() {
       const current = $("categorySelect").value;
       if (state.mode === "products") {
-        $("categorySelect").innerHTML = `<option value="">Wszystkie kategorie</option>` +
+        $("categorySelect").innerHTML = `<option value="">All categories</option>` +
           state.categories.map((item) => `<option value="${esc(item)}">${esc(item)}</option>`).join("");
       } else if (state.mode === "colors") {
         $("categorySelect").innerHTML = `
-          <option value="">Kolory i tekstury</option>
-          <option value="simple">Tylko kolory</option>
-          <option value="advanced">Tylko tekstury</option>
+          <option value="">All items in group</option>
+          <option value="simple">Colors only</option>
+          <option value="advanced">Textures only</option>
         `;
       }
       $("categorySelect").value = current;
@@ -514,18 +608,29 @@
     function renderList() {
       $("list").innerHTML = state.items.map((item) => {
         const meta = state.mode === "products"
-          ? [item.unit ? `jedn.: ${item.unit}` : "", ...(item.categories || []).slice(0, 3)]
+          ? [item.unit ? `unit: ${item.unit}` : "", ...(item.categories || []).slice(0, 3)]
           : state.mode === "colors"
-            ? [item.type === "advanced" ? "tekstura" : "kolor", item.rgb ? `RGB ${item.rgb.r}, ${item.rgb.g}, ${item.rgb.b}` : ""]
+            ? [`${item.count || 0} items`, ...(item.used_by_products || []).length ? [`products: ${item.used_by_products.length}`] : []]
             : [item.type, item.insulation, item.bim_type];
-        return `<button class="item${item.id === state.selectedId ? " active" : ""}" type="button" data-id="${esc(item.id)}">
+        return `<button class="item${item.id === state.selectedId ? " active" : ""}" type="button" data-id="${esc(item.id)}" data-kind="${state.mode}">
           <span class="item-title">${esc(item.name)}</span>
           <span class="item-meta">${meta.filter(Boolean).map((value) => `<span>${esc(value)}</span>`).join("")}</span>
         </button>`;
-      }).join("") || `<div class="item"><span class="muted">Brak wyników.</span></div>`;
+      }).join("") || `<div class="item"><span class="muted">No results.</span></div>`;
       for (const button of document.querySelectorAll(".item[data-id]")) {
-        button.addEventListener("click", () => loadDetail(Number(button.dataset.id)));
+        button.addEventListener("click", () => {
+          if (state.mode === "colors") loadColorGroup(Number(button.dataset.id));
+          else loadDetail(Number(button.dataset.id));
+        });
       }
+    }
+
+    async function loadColorGroup(id) {
+      state.selectedId = id;
+      renderList();
+      const data = await api(`/api/color-groups/${id}`);
+      $("detail").innerHTML = renderColorGroup(data);
+      attachColorTileEvents();
     }
 
     async function loadDetail(id) {
@@ -534,6 +639,7 @@
       const path = state.mode === "products" ? `/api/products/${id}` : state.mode === "colors" ? `/api/colors/${id}` : `/api/systems/${id}`;
       const data = await api(path);
       $("detail").innerHTML = state.mode === "products" ? renderProduct(data) : state.mode === "colors" ? renderColor(data) : renderSystem(data);
+      attachColorTileEvents();
     }
 
     function renderProduct(data) {
@@ -542,21 +648,22 @@
           <h2>${esc(data.name)}</h2>
           <div class="summary">
             <span class="pill">ID: ${esc(data.id)}</span>
-            <span class="pill">Atrybuty: ${esc(data.attribute_count)}</span>
-            ${data.unit ? `<span class="pill">Jednostka: ${esc(data.unit)}</span>` : ""}
+            <span class="pill">Attributes: ${esc(data.attribute_count)}</span>
+            ${data.unit ? `<span class="pill">Unit: ${esc(data.unit)}</span>` : ""}
             ${(data.categories || []).map((item) => `<span class="pill">${esc(item)}</span>`).join("")}
           </div>
         </div>
         ${mediaGrid(data.media)}
+        ${productColorLinks(data.color_links)}
         ${featureTable(data.features)}
-        ${tableBlock("Typoszereg / SOT", data.sot_table)}
+        ${tableBlock("Product range / SOT", data.sot_table)}
         ${fieldGrid(data.general)}
-        ${infoRows("Informacje produktowe", data.product_information)}
-        ${tableBlock("Opakowania", data.package_table)}
-        ${tableBlock("Palety", data.palette_table)}
-        ${tableBlock("Warianty produktu", data.variant_table)}
-        ${tableBlock("Dokumenty", data.document_table)}
-        ${section("Surowe cechy własne", data.custom_attributes)}
+        ${infoRows("Product information", data.product_information)}
+        ${tableBlock("Packages", data.package_table)}
+        ${tableBlock("Pallets", data.palette_table)}
+        ${tableBlock("Product variants", data.variant_table)}
+        ${tableBlock("Documents", data.document_table)}
+        ${section("Raw custom attributes", data.custom_attributes)}
       `;
     }
 
@@ -566,7 +673,7 @@
           <h2>${esc(data.name)}</h2>
           <div class="summary">
             <span class="pill">ID: ${esc(data.id)}</span>
-            <span class="pill">Atrybuty: ${esc(data.attribute_count)}</span>
+            <span class="pill">Attributes: ${esc(data.attribute_count)}</span>
             ${data.type ? `<span class="pill">${esc(data.type)}</span>` : ""}
             ${data.insulation ? `<span class="pill">${esc(data.insulation)}</span>` : ""}
             ${data.bim_type ? `<span class="pill">BIM: ${esc(data.bim_type)}</span>` : ""}
@@ -585,21 +692,156 @@
           <h2>${esc(data.name)}</h2>
           <div class="summary">
             <span class="pill">ID: ${esc(data.id)}</span>
-            <span class="pill">${data.type === "advanced" ? "Tekstura" : "Kolor"}</span>
+            <span class="pill">${data.type === "advanced" ? "Texture" : "Color"}</span>
             ${data.rgb ? `<span class="pill">RGB ${esc(data.rgb.r)}, ${esc(data.rgb.g)}, ${esc(data.rgb.b)}</span>` : ""}
           </div>
         </div>
         ${colorPreview(data)}
-        ${mediaGrid(data.media)}
+        ${textureChannels(data.media)}
+        ${colorRelations(data)}
         <div class="data-table">
           <table>
-            <thead><tr><th>Parametr</th><th>Wartość</th></tr></thead>
+            <thead><tr><th>Parameter</th><th>Value</th></tr></thead>
             <tbody>${(data.parameters || []).map((item) => `
               <tr><td>${esc(item.name)}</td><td>${esc(item.value)}</td></tr>
             `).join("")}</tbody>
           </table>
         </div>
       `;
+    }
+
+    function renderColorGroup(data) {
+      const filter = $("categorySelect").value || "";
+      const colors = (data.colors || []).filter((item) => !filter || item.type === filter);
+      return `
+        <div class="detail-head">
+          <h2>${esc(data.name)}</h2>
+          <div class="summary">
+            <span class="pill">ID: ${esc(data.id)}</span>
+            <span class="pill">Items: ${esc(data.count)}</span>
+            ${(data.used_by_products || []).length ? `<span class="pill">Products: ${esc(data.used_by_products.length)}</span>` : ""}
+          </div>
+          ${data.description ? `<div class="muted">${esc(data.description)}</div>` : ""}
+        </div>
+        ${mediaGrid(data.media)}
+        ${groupRelations(data)}
+        ${renderColorGallery(colors)}
+      `;
+    }
+
+    function renderColorGallery(items) {
+      if (!items || !items.length) return `<div class="muted">No colors or textures for the selected filter.</div>`;
+      return `<div class="color-gallery">${items.map((item) => `
+        <div class="color-tile">
+          <button type="button" data-color-id="${esc(item.id)}">
+            ${colorTilePreview(item)}
+            <div class="color-tile-body">
+              <strong>${esc(item.name)}</strong>
+              <div class="item-meta">
+                <span>${item.type === "advanced" ? "texture" : "color"}</span>
+                ${item.rgb ? `<span>RGB ${esc(item.rgb.r)}, ${esc(item.rgb.g)}, ${esc(item.rgb.b)}</span>` : ""}
+                ${(item.used_by_products || []).length ? `<span>products: ${esc(item.used_by_products.length)}</span>` : ""}
+              </div>
+            </div>
+          </button>
+        </div>
+      `).join("")}</div>`;
+    }
+
+    function colorTilePreview(item) {
+      if (item.thumbnail) return `<img src="${esc(item.thumbnail)}" alt="${esc(item.name)}">`;
+      if (item.rgb) {
+        const color = `rgb(${Number(item.rgb.r) || 0}, ${Number(item.rgb.g) || 0}, ${Number(item.rgb.b) || 0})`;
+        return `<span class="swatch" style="background:${esc(color)}"></span>`;
+      }
+      return `<span class="swatch"></span>`;
+    }
+
+    async function openColorModal(id) {
+      const data = await api(`/api/colors/${id}`);
+      $("modalTitle").textContent = data.name;
+      $("modalBody").innerHTML = renderColor(data);
+      $("modalBackdrop").hidden = false;
+    }
+
+    function closeModal() {
+      $("modalBackdrop").hidden = true;
+      $("modalBody").innerHTML = "";
+    }
+
+    function textureChannels(items) {
+      if (!items || !items.length) return "";
+      const label = {
+        Thumbnail: "Thumbnail",
+        MainTexture: "Main texture",
+        base_color_map: "Base Color Map",
+        normal_map: "Normal Map",
+        displacement_map: "Displacement Map",
+        opacity_map: "Opacity Map",
+        roughness_map: "Roughness Map",
+      };
+      return `<details open>
+        <summary>Texture channels (${items.length})</summary>
+        <div class="media-grid">${items.map((item) => `
+          <div class="media-card">
+            ${item.kind === "image" ? `<img src="${esc(item.url)}" alt="${esc(label[item.parameter] || item.parameter || item.name)}">` : ""}
+            <a href="${esc(item.url)}" target="_blank" rel="noreferrer">${esc(label[item.parameter] || item.parameter || item.name)}</a>
+          </div>
+        `).join("")}</div>
+      </details>`;
+    }
+
+    function productColorLinks(links) {
+      if (!links) return "";
+      const structures = links.structures || [];
+      const groups = links.groups || [];
+      if (!structures.length && !groups.length) return "";
+      return `<details open>
+        <summary>Product colors, structures and textures</summary>
+        ${structures.length ? `<h2>Structures / textures</h2><div class="color-gallery">${structures.map((item) => `
+          <div class="color-tile"><button type="button" data-color-id="${esc(item.id)}">${colorTilePreview(item)}<div class="color-tile-body"><strong>${esc(item.name)}</strong></div></button></div>
+        `).join("")}</div>` : ""}
+        ${groups.length ? `<h2>Color groups</h2><div class="relation-list">${groups.map((group) => `
+          <div class="relation-item">
+            <strong>${esc(group.name)}</strong>
+            <div class="muted">${esc(group.count)} colors/textures</div>
+            <div class="media-grid">${(group.sample_colors || []).slice(0, 8).map((item) => `<div class="media-card">${colorTilePreview(item)}<a>${esc(item.name)}</a></div>`).join("")}</div>
+          </div>
+        `).join("")}</div>` : ""}
+      </details>`;
+    }
+
+    function colorRelations(data) {
+      const products = data.used_by_products || [];
+      const groups = data.groups || [];
+      if (!products.length && !groups.length) return "";
+      return `<details open>
+        <summary>Relations</summary>
+        ${groups.length ? `<h2>Groups</h2><div class="relation-list">${groups.map((group) => `<div class="relation-item">${esc(group.name)}</div>`).join("")}</div>` : ""}
+        ${products.length ? `<h2>Products</h2><div class="relation-list">${products.map((product) => `
+          <div class="relation-item">
+            <strong>${esc(product.product_name)}</strong>
+            <div class="muted">ID ${esc(product.product_id)} · ${esc(product.relation)}${product.group_name ? ` · ${esc(product.group_name)}` : ""}</div>
+          </div>
+        `).join("")}</div>` : ""}
+      </details>`;
+    }
+
+    function groupRelations(data) {
+      const products = data.used_by_products || [];
+      if (!products.length) return "";
+      return `<details>
+        <summary>Products using this group (${products.length})</summary>
+        <div class="relation-list">${products.map((product) => `
+          <div class="relation-item"><strong>${esc(product.product_name)}</strong><div class="muted">ID ${esc(product.product_id)}</div></div>
+        `).join("")}</div>
+      </details>`;
+    }
+
+    function attachColorTileEvents() {
+      for (const button of document.querySelectorAll("[data-color-id]")) {
+        button.addEventListener("click", () => openColorModal(Number(button.dataset.colorId)));
+      }
     }
 
     function colorPreview(data) {
@@ -625,7 +867,7 @@
       if (!features || !features.length) return "";
       return `<div class="data-table">
         <table>
-          <thead><tr><th>Cecha</th><th>Wartość</th><th>Prefiks</th><th>Sufiks / jednostka</th></tr></thead>
+          <thead><tr><th>Feature</th><th>Value</th><th>Prefix</th><th>Suffix / unit</th></tr></thead>
           <tbody>${features.map((item) => `
             <tr>
               <td><strong>${esc(item.name)}</strong></td>
@@ -644,7 +886,7 @@
         <summary>${esc(title)} (${table.rows.length})</summary>
         <div class="data-table">
           <table>
-            <thead><tr><th>Wiersz</th>${table.columns.map((column) => `<th>${esc(column.label)}</th>`).join("")}</tr></thead>
+            <thead><tr><th>Row</th>${table.columns.map((column) => `<th>${esc(column.label)}</th>`).join("")}</tr></thead>
             <tbody>${table.rows.map((row) => `
               <tr>
                 <td>${esc(row.row)}</td>
@@ -678,7 +920,7 @@
           <h3>${esc(variant.name)}</h3>
           <div class="data-table">
             <table>
-              <thead><tr><th>Pozycja</th><th>Warstwa</th><th>Produkt / wariant</th></tr></thead>
+              <thead><tr><th>Position</th><th>Layer</th><th>Product / variant</th></tr></thead>
               <tbody>${(variant.layers || []).map((layer) => `
                 <tr>
                   <td>${esc(layer.position || layer.row)}</td>
@@ -693,13 +935,13 @@
     }
 
     function productSelector(products) {
-      if (!products.length) return `<span class="muted">Brak przypisanych produktów</span>`;
+      if (!products.length) return `<span class="muted">No assigned products</span>`;
       const options = products.map((item, index) => {
-        const label = `${item.product_name || item.product_id}${item.variant ? ` / wariant ${item.variant}` : ""}${item.default ? " / domyślny" : ""}`;
+        const label = `${item.product_name || item.product_id}${item.variant ? ` / variant ${item.variant}` : ""}${item.default ? " / default" : ""}`;
         return `<option value="${index}">${esc(label)}</option>`;
       }).join("");
       const chips = products.map((item) => `
-        <span class="product-chip">${esc(item.product_name || item.product_id)}${item.variant ? `, wariant ${esc(item.variant)}` : ""}</span>
+        <span class="product-chip">${esc(item.product_name || item.product_id)}${item.variant ? `, variant ${esc(item.variant)}` : ""}</span>
       `).join("");
       return `<div class="product-choice"><select>${options}</select><div>${chips}</div></div>`;
     }
@@ -718,7 +960,7 @@
       return `<details open>
         <summary>${esc(title)} (${rows.length})</summary>
         <table>
-          <thead><tr><th>Wiersz</th><th>Pola</th></tr></thead>
+          <thead><tr><th>Row</th><th>Fields</th></tr></thead>
           <tbody>${rows.map((row) => `
             <tr>
               <td>${esc(row.row)}</td>
@@ -732,9 +974,9 @@
     function filesSection(files) {
       if (!files.length) return "";
       return `<details open>
-        <summary>Pliki (${files.length})</summary>
+        <summary>Files (${files.length})</summary>
         <table>
-          <thead><tr><th>Nazwa</th><th>Adres</th></tr></thead>
+          <thead><tr><th>Name</th><th>Address</th></tr></thead>
           <tbody>${files.map((file) => `
             <tr>
               <td>${esc(file.uploadedfileName || file.fileName || file.AttributeId)}</td>
@@ -749,8 +991,15 @@
     $("systemsTab").addEventListener("click", () => setMode("systems"));
     $("colorsTab").addEventListener("click", () => setMode("colors"));
     $("changeSourceBtn").addEventListener("click", () => changeSourceFiles());
+    $("modalCloseBtn").addEventListener("click", () => closeModal());
+    $("modalBackdrop").addEventListener("click", (event) => {
+      if (event.target === $("modalBackdrop")) closeModal();
+    });
     $("searchInput").addEventListener("input", () => loadList());
-    $("categorySelect").addEventListener("change", () => loadList());
+    $("categorySelect").addEventListener("change", () => {
+      if (state.mode === "colors" && state.selectedId) loadColorGroup(state.selectedId);
+      else loadList();
+    });
 
     async function startApp() {
       const ready = await loadSourceStatus();
