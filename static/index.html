@@ -564,7 +564,7 @@
     </div>
   </div>
   <script>
-    const state = { mode: "products", items: [], selectedId: null, filters: { products: {}, systems: {}, colors: {} }, filterDefs: [] };
+    const state = { mode: "products", items: [], selectedId: null, filters: { products: {}, systems: {}, colors: {} }, filterDefs: [], requestId: 0 };
     const REQUIRED_FILES = [
       "productsModels.json",
       "productsAttributes.json",
@@ -690,6 +690,7 @@
     }
 
     async function loadList() {
+      const requestId = ++state.requestId;
       const query = encodeURIComponent($("searchInput").value.trim());
       const params = new URLSearchParams();
       if (query) params.set("q", $("searchInput").value.trim());
@@ -705,6 +706,7 @@
           ? `/api/color-groups`
           : `/api/systems${suffix}`;
       const data = await api(url);
+      if (requestId !== state.requestId) return;
       state.items = state.mode === "colors"
         ? (data.items || []).filter((item) => !query || `${item.name} ${item.description || ""}`.toLowerCase().includes(decodeURIComponent(query).toLowerCase()))
         : data.items || [];
@@ -749,6 +751,7 @@
       if (clearButton) {
         clearButton.addEventListener("click", () => {
           state.filters[state.mode] = {};
+          state.selectedId = null;
           loadList();
         });
       }
@@ -787,6 +790,7 @@
       }
       if (!modeFilters[id].length) delete modeFilters[id];
       state.filters[state.mode] = modeFilters;
+      state.selectedId = null;
       loadList();
     }
 
@@ -839,11 +843,13 @@
     }
 
     async function loadDetail(id) {
+      const requestId = ++state.requestId;
       state.selectedId = id;
       if (state.mode === "colors") renderList();
       else renderFilters();
       const path = state.mode === "products" ? `/api/products/${id}` : state.mode === "colors" ? `/api/colors/${id}` : `/api/systems/${id}`;
       const data = await api(path);
+      if (requestId !== state.requestId) return;
       $("detail").innerHTML = state.mode === "products" ? renderProduct(data) : state.mode === "colors" ? renderColor(data) : renderSystem(data);
       attachColorTileEvents();
     }
@@ -1478,7 +1484,10 @@
     $("modalBackdrop").addEventListener("click", (event) => {
       if (event.target === $("modalBackdrop")) closeModal();
     });
-    $("searchInput").addEventListener("input", () => loadList());
+    $("searchInput").addEventListener("input", () => {
+      state.selectedId = null;
+      loadList();
+    });
     $("categorySelect").addEventListener("change", () => {
       if (state.mode === "colors" && state.selectedId) loadColorGroup(state.selectedId);
       else loadList();
