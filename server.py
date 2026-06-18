@@ -114,7 +114,10 @@ def values_for_parent(all_attrs: list[dict], parent_id: int, attr_defs: dict[int
         if int(attr.get("ParentAttributeId") or 0) != parent_id:
             continue
         attr_id = int(attr.get("AttributeId") or 0)
-        value = first_value(attr, attr_defs.get(attr_id))
+        attr_def = attr_defs.get(attr_id)
+        if (attr_def or {}).get("AttributeType") == "Checkboxes" and attr.get("BooleanValue") is not True:
+            continue
+        value = first_value(attr, attr_def)
         if value in (None, "", False):
             continue
         values.append(
@@ -126,6 +129,14 @@ def values_for_parent(all_attrs: list[dict], parent_id: int, attr_defs: dict[int
                 "row": attr.get("RowI") or 0,
                 "hash": attr.get("hash"),
                 "parent_hash": attr.get("parentHash"),
+                "raw": {
+                    "varcharValue": attr.get("varcharValue"),
+                    "TextValue": attr.get("TextValue"),
+                    "IntValue": attr.get("IntValue"),
+                    "IntValue2": attr.get("IntValue2"),
+                    "NumberValue": attr.get("NumberValue"),
+                    "BooleanValue": attr.get("BooleanValue"),
+                },
             }
         )
     return values
@@ -140,6 +151,49 @@ def rows_for_parent(all_attrs: list[dict], parent_id: int, attr_defs: dict[int, 
     for (row_index, row_hash), items in sorted(grouped.items()):
         rows.append({"row": row_index, "hash": row_hash, "values": items})
     return rows
+
+
+def row_map(row: dict) -> dict[str, dict]:
+    return {str(item.get("attribute_name") or item.get("attribute_id")): item for item in row.get("values") or []}
+
+
+def field_value(row: dict, key: str, default: object = "") -> object:
+    item = row_map(row).get(key)
+    return item.get("value") if item else default
+
+
+def file_media(version: dict) -> list[dict]:
+    media = []
+    for item in version.get("filesAttributes") or []:
+        url = item.get("fileUrl") or ""
+        name = item.get("uploadedfileName") or item.get("fileName") or Path(url).name
+        ext = str(name or url).rsplit(".", 1)[-1].lower() if "." in str(name or url) else ""
+        media.append(
+            {
+                "name": name or "plik",
+                "url": url,
+                "kind": "image" if ext in {"jpg", "jpeg", "png", "webp", "gif"} else "file",
+                "attribute_id": item.get("AttributeId"),
+                "row": item.get("RowI") or 0,
+            }
+        )
+    return media
+
+
+def rows_as_table(rows: list[dict]) -> dict:
+    columns: dict[str, str] = {}
+    table_rows = []
+    for row in rows:
+        values = {}
+        for item in row.get("values") or []:
+            key = str(item.get("attribute_name") or item.get("attribute_id"))
+            columns.setdefault(key, str(item.get("label") or key))
+            values[key] = item.get("value")
+        table_rows.append({"row": row.get("row"), "hash": row.get("hash"), "values": values})
+    return {
+        "columns": [{"key": key, "label": label} for key, label in columns.items()],
+        "rows": table_rows,
+    }
 
 
 class PimData:
@@ -180,10 +234,19 @@ class PimData:
 
     def product_detail(self, product_id: int, compact: bool = False) -> dict:
         product = self.product_index[product_id]
+        versions = product.get("dataVersions") or product.get("DataVersions") or [{}]
+        latest_version = versions[-1] if versions else {}
         attrs = latest_attrs(product)
         root_values = values_for_parent(attrs, 0, self.product_attr_defs)
         categories = [str(item["value"]) for item in root_values if item["attribute_id"] == 230]
         unit = next((item["value"] for item in root_values if item["attribute_id"] == 231), "")
+        custom_rows = rows_for_parent(attrs, 232, self.product_attr_defs)
+        product_info_rows = rows_for_parent(attrs, 233, self.product_attr_defs)
+        package_rows = rows_for_parent(attrs, 234, self.product_attr_defs)
+        palette_rows = rows_for_parent(attrs, 235, self.product_attr_defs)
+        variant_rows = rows_for_parent(attrs, 236, self.product_attr_defs)
+        document_rows = rows_for_parent(attrs, 237, self.product_attr_defs)
+        sot_rows = rows_for_parent(attrs, 276, self.product_attr_defs)
         result = {
             "id": product_id,
             "name": product_name(product, self.product_attr_defs),
@@ -196,16 +259,45 @@ class PimData:
         result.update(
             {
                 "general": root_values,
-                "custom_attributes": rows_for_parent(attrs, 232, self.product_attr_defs),
-                "product_information": rows_for_parent(attrs, 233, self.product_attr_defs),
-                "packages": rows_for_parent(attrs, 234, self.product_attr_defs),
-                "palettes": rows_for_parent(attrs, 235, self.product_attr_defs),
-                "variants": rows_for_parent(attrs, 236, self.product_attr_defs),
-                "documents": rows_for_parent(attrs, 237, self.product_attr_defs),
-                "sot": rows_for_parent(attrs, 276, self.product_attr_defs),
+                "custom_attributes": custom_rows,
+                "features": self.product_features(custom_rows),
+                "product_information": product_info_rows,
+                "packages": package_rows,
+                "package_table": rows_as_table(package_rows),
+                "palettes": palette_rows,
+                "palette_table": rows_as_table(palette_rows),
+                "variants": variant_rows,
+                "variant_table": rows_as_table(variant_rows),
+                "documents": document_rows,
+                "document_table": rows_as_table(document_rows),
+                "sot": sot_rows,
+                "sot_table": rows_as_table(sot_rows),
+                "media": file_media(latest_version),
             }
         )
         return result
+
+    def product_features(self, rows: list[dict]) -> list[dict]:
+        features = []
+        for row in rows:
+            values = row_map(row)
+            name = (values.get("attribute_name") or {}).get("value")
+            value_item = values.get("value") or values.get("www_value")
+            value = value_item.get("value") if value_item else ""
+            prefix = (values.get("field_prefix") or {}).get("value") or ""
+            suffix = (values.get("field_suffix") or {}).get("value") or ""
+            if not name and not value:
+                continue
+            features.append(
+                {
+                    "name": name or f"Cecha {row.get('row')}",
+                    "prefix": prefix,
+                    "value": value,
+                    "suffix": suffix,
+                    "row": row.get("row"),
+                }
+            )
+        return features
 
     def list_systems(self, query: str = "") -> dict:
         query = query.lower().strip()
@@ -220,8 +312,13 @@ class PimData:
 
     def system_detail(self, element_id: int, compact: bool = False) -> dict:
         element = self.element_index[element_id]
+        versions = element.get("dataVersions") or [{}]
+        latest_version = versions[-1] if versions else {}
         attrs = latest_attrs(element)
         root_values = values_for_parent(attrs, 0, self.element_attr_defs)
+        variant_rows = rows_for_parent(attrs, 283, self.element_attr_defs)
+        layer_rows = rows_for_parent(attrs, 285, self.element_attr_defs)
+        available_rows = rows_for_parent(attrs, 289, self.element_attr_defs)
         result = {
             "id": element_id,
             "name": element_name(element, self.element_attr_defs),
@@ -235,13 +332,65 @@ class PimData:
         result.update(
             {
                 "general": root_values,
-                "variants": rows_for_parent(attrs, 283, self.element_attr_defs),
-                "layers": rows_for_parent(attrs, 285, self.element_attr_defs),
-                "available_products": rows_for_parent(attrs, 289, self.element_attr_defs),
-                "files": (element.get("dataVersions") or [{}])[-1].get("filesAttributes", []),
+                "variants": variant_rows,
+                "layers": layer_rows,
+                "available_products": available_rows,
+                "system_variants": self.system_variants(variant_rows, layer_rows, available_rows),
+                "files": latest_version.get("filesAttributes", []),
+                "media": file_media(latest_version),
             }
         )
         return result
+
+    def system_variants(self, variant_rows: list[dict], layer_rows: list[dict], available_rows: list[dict]) -> list[dict]:
+        layers_by_variant: dict[str, list[dict]] = {}
+        for layer in layer_rows:
+            parent_hash = str((layer.get("values") or [{}])[0].get("parent_hash") or "")
+            layers_by_variant.setdefault(parent_hash, []).append(layer)
+
+        products_by_layer: dict[str, list[dict]] = {}
+        for available in available_rows:
+            parent_hash = str((available.get("values") or [{}])[0].get("parent_hash") or "")
+            products_by_layer.setdefault(parent_hash, []).append(available)
+
+        variants = []
+        for variant in variant_rows:
+            variant_hash = str(variant.get("hash") or "")
+            variant_layers = []
+            for layer in sorted(layers_by_variant.get(variant_hash, []), key=lambda item: item.get("row") or 0):
+                layer_hash = str(layer.get("hash") or "")
+                products = []
+                for available in products_by_layer.get(layer_hash, []):
+                    product_item = next((item for item in available.get("values") or [] if item.get("attribute_id") == 290), None)
+                    default_item = next((item for item in available.get("values") or [] if item.get("attribute_id") == 298), None)
+                    raw = product_item.get("raw") if product_item else {}
+                    product_id = raw.get("IntValue") if raw else None
+                    product_variant = raw.get("IntValue2") if raw else None
+                    linked_product = self.product_index.get(int(product_id)) if isinstance(product_id, int) else None
+                    products.append(
+                        {
+                            "product_id": product_id,
+                            "product_name": product_name(linked_product, self.product_attr_defs) if linked_product else product_item.get("value") if product_item else "",
+                            "variant": product_variant,
+                            "default": bool(default_item.get("value")) if default_item else False,
+                        }
+                    )
+                variant_layers.append(
+                    {
+                        "row": layer.get("row"),
+                        "position": field_value(layer, "layer_position"),
+                        "name": field_value(layer, "layer_name"),
+                        "products": products,
+                    }
+                )
+            variants.append(
+                {
+                    "row": variant.get("row"),
+                    "name": field_value(variant, "variant_name", f"Wariant {variant.get('row')}"),
+                    "layers": variant_layers,
+                }
+            )
+        return variants
 
 
 class DataStore:

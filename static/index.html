@@ -146,6 +146,32 @@
       grid-template-columns: repeat(2, minmax(220px, 1fr));
       gap: 10px;
     }
+    .media-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+      gap: 10px;
+      margin: 12px 0;
+    }
+    .media-card {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      overflow: hidden;
+      background: #fff;
+    }
+    .media-card img {
+      width: 100%;
+      aspect-ratio: 4 / 3;
+      object-fit: cover;
+      display: block;
+      background: var(--ink-soft);
+    }
+    .media-card a {
+      display: block;
+      padding: 8px;
+      color: var(--text);
+      font-weight: 700;
+      overflow-wrap: anywhere;
+    }
     .field, details {
       border: 1px solid var(--line);
       border-radius: 6px;
@@ -191,6 +217,51 @@
     td {
       overflow-wrap: anywhere;
       white-space: pre-wrap;
+    }
+    .data-table {
+      margin: 12px 0;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      overflow: auto;
+      background: #fff;
+    }
+    .data-table table { min-width: 620px; }
+    .data-table th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      background: var(--ink-soft);
+    }
+    .system-variant {
+      margin-top: 14px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      overflow: hidden;
+      background: #fff;
+    }
+    .system-variant h3 {
+      margin: 0;
+      padding: 11px 12px;
+      border-bottom: 1px solid var(--line);
+      background: var(--ink-soft);
+      font-size: 15px;
+    }
+    .product-choice {
+      display: grid;
+      gap: 4px;
+    }
+    .product-choice select {
+      max-width: 360px;
+      margin: 0;
+    }
+    .product-chip {
+      display: inline-block;
+      margin: 2px 4px 2px 0;
+      padding: 3px 6px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--ink-soft);
+      font-size: 12px;
     }
     .muted { color: var(--muted); }
     .warn { color: var(--danger); }
@@ -423,14 +494,16 @@
             ${(data.categories || []).map((item) => `<span class="pill">${esc(item)}</span>`).join("")}
           </div>
         </div>
+        ${mediaGrid(data.media)}
+        ${featureTable(data.features)}
+        ${tableBlock("Typoszereg / SOT", data.sot_table)}
         ${fieldGrid(data.general)}
-        ${section("Cechy własne", data.custom_attributes)}
-        ${section("Informacje produktowe", data.product_information)}
-        ${section("Opakowania", data.packages)}
-        ${section("Palety", data.palettes)}
-        ${section("Warianty", data.variants)}
-        ${section("Dokumenty", data.documents)}
-        ${section("Typoszereg / SOT", data.sot)}
+        ${infoRows("Informacje produktowe", data.product_information)}
+        ${tableBlock("Opakowania", data.package_table)}
+        ${tableBlock("Palety", data.palette_table)}
+        ${tableBlock("Warianty produktu", data.variant_table)}
+        ${tableBlock("Dokumenty", data.document_table)}
+        ${section("Surowe cechy własne", data.custom_attributes)}
       `;
     }
 
@@ -446,12 +519,104 @@
             ${data.bim_type ? `<span class="pill">BIM: ${esc(data.bim_type)}</span>` : ""}
           </div>
         </div>
+        ${mediaGrid(data.media)}
         ${fieldGrid(data.general)}
-        ${section("Warianty systemu", data.variants)}
-        ${section("Warstwy", data.layers)}
-        ${section("Produkty dostępne w warstwach", data.available_products)}
+        ${systemVariants(data.system_variants)}
         ${filesSection(data.files || [])}
       `;
+    }
+
+    function mediaGrid(items) {
+      if (!items || !items.length) return "";
+      return `<div class="media-grid">${items.map((item) => `
+        <div class="media-card">
+          ${item.kind === "image" ? `<img src="${esc(item.url)}" alt="${esc(item.name)}">` : ""}
+          <a href="${esc(item.url)}" target="_blank" rel="noreferrer">${esc(item.name || item.url)}</a>
+        </div>
+      `).join("")}</div>`;
+    }
+
+    function featureTable(features) {
+      if (!features || !features.length) return "";
+      return `<div class="data-table">
+        <table>
+          <thead><tr><th>Cecha</th><th>Wartość</th><th>Prefiks</th><th>Sufiks / jednostka</th></tr></thead>
+          <tbody>${features.map((item) => `
+            <tr>
+              <td><strong>${esc(item.name)}</strong></td>
+              <td>${esc(item.value)}</td>
+              <td>${esc(item.prefix || "")}</td>
+              <td>${esc(item.suffix || "")}</td>
+            </tr>
+          `).join("")}</tbody>
+        </table>
+      </div>`;
+    }
+
+    function tableBlock(title, table) {
+      if (!table || !table.rows || !table.rows.length) return "";
+      return `<details open>
+        <summary>${esc(title)} (${table.rows.length})</summary>
+        <div class="data-table">
+          <table>
+            <thead><tr><th>Wiersz</th>${table.columns.map((column) => `<th>${esc(column.label)}</th>`).join("")}</tr></thead>
+            <tbody>${table.rows.map((row) => `
+              <tr>
+                <td>${esc(row.row)}</td>
+                ${table.columns.map((column) => `<td>${esc(row.values[column.key] ?? "")}</td>`).join("")}
+              </tr>
+            `).join("")}</tbody>
+          </table>
+        </div>
+      </details>`;
+    }
+
+    function infoRows(title, rows) {
+      if (!rows || !rows.length) return "";
+      return `<details>
+        <summary>${esc(title)} (${rows.length})</summary>
+        <div class="grid">
+          ${rows.flatMap((row) => row.values || []).filter((item) => item.value !== true).map((item) => `
+            <div class="field">
+              <div class="field-label">${esc(item.label)}</div>
+              <div class="field-value">${esc(item.value)}</div>
+            </div>
+          `).join("")}
+        </div>
+      </details>`;
+    }
+
+    function systemVariants(variants) {
+      if (!variants || !variants.length) return "";
+      return variants.map((variant) => `
+        <div class="system-variant">
+          <h3>${esc(variant.name)}</h3>
+          <div class="data-table">
+            <table>
+              <thead><tr><th>Pozycja</th><th>Warstwa</th><th>Produkt / wariant</th></tr></thead>
+              <tbody>${(variant.layers || []).map((layer) => `
+                <tr>
+                  <td>${esc(layer.position || layer.row)}</td>
+                  <td><strong>${esc(layer.name)}</strong></td>
+                  <td>${productSelector(layer.products || [])}</td>
+                </tr>
+              `).join("")}</tbody>
+            </table>
+          </div>
+        </div>
+      `).join("");
+    }
+
+    function productSelector(products) {
+      if (!products.length) return `<span class="muted">Brak przypisanych produktów</span>`;
+      const options = products.map((item, index) => {
+        const label = `${item.product_name || item.product_id}${item.variant ? ` / wariant ${item.variant}` : ""}${item.default ? " / domyślny" : ""}`;
+        return `<option value="${index}">${esc(label)}</option>`;
+      }).join("");
+      const chips = products.map((item) => `
+        <span class="product-chip">${esc(item.product_name || item.product_id)}${item.variant ? `, wariant ${esc(item.variant)}` : ""}</span>
+      `).join("");
+      return `<div class="product-choice"><select>${options}</select><div>${chips}</div></div>`;
     }
 
     function fieldGrid(items) {
