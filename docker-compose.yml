@@ -1,0 +1,8 @@
+services:
+  db-data-browser:
+    build: .
+    ports:
+      - "8788:8788"
+    volumes:
+      - ../dane-z-PIM:/data:ro
+    restart: unless-stopped
