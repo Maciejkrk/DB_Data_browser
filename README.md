@@ -2,13 +2,7 @@
 
 Lokalna przeglądarka danych PIM dla produktów i systemów budowlanych.
 
-Źródło danych domyślnie:
-
-```text
-C:\Users\Admin\Documents\Agent AI do obsługi zapytań budowlanych\dane-z-PIM
-```
-
-## Uruchomienie
+## Uruchomienie Lokalne
 
 Najprościej: uruchom dwuklikiem:
 
@@ -29,6 +23,34 @@ Potem otwórz:
 http://127.0.0.1:8788
 ```
 
+Przy pierwszym wejściu aplikacja pokaże ekran importu plików PIM.
+
+## Pliki Do Importu
+
+Wgraj pliki JSON z eksportu PIM. Możesz zaznaczyć wszystkie naraz albo dodawać je po kolei:
+
+```text
+productsModels.json
+productsAttributes.json
+products.json
+buildingsElementsModels.json
+buildingsElementsAttributes.json
+building_elements.json
+colors.json
+colorParameters.json
+colorGroups.json
+colorGroupParameters.json
+```
+
+Do samego działania przeglądarki produktów i systemów wymagane są pliki podstawowe:
+
+```text
+productsAttributes.json
+products.json
+buildingsElementsAttributes.json
+building_elements.json
+```
+
 ## Zakres
 
 - lista produktów z wyszukiwaniem i filtrem kategorii,
@@ -39,32 +61,12 @@ http://127.0.0.1:8788
 
 ## Docker
 
-Zbuduj i uruchom obraz, montując katalog z plikami PIM jako `/data`:
-
-```powershell
-docker build -t db-data-browser .
-docker run --rm -p 8788:8788 -v "C:\Users\Admin\Documents\Agent AI do obsługi zapytań budowlanych\dane-z-PIM:/data:ro" db-data-browser
-```
-
-Na zdalnym komputerze podmień ścieżkę po lewej stronie `-v` na lokalny katalog z plikami:
-
-```text
-products.json
-productsAttributes.json
-productsModels.json
-building_elements.json
-buildingsElementsAttributes.json
-buildingsElementsModels.json
-```
-
-Przykład dla Linuksa:
+Na komputerze z Dockerem pobierz repozytorium i uruchom Compose:
 
 ```bash
-docker run -d --name db-data-browser \
-  -p 8788:8788 \
-  -v /opt/pim-data/dane-z-PIM:/data:ro \
-  --restart unless-stopped \
-  db-data-browser
+git clone https://github.com/Maciejkrk/DB_Data_browser.git
+cd DB_Data_browser
+docker compose up -d --build
 ```
 
 Po starcie otwórz:
@@ -73,8 +75,22 @@ Po starcie otwórz:
 http://ADRES_SERWERA:8788
 ```
 
-Jeśli katalog `dane-z-PIM` leży obok repozytorium, możesz też użyć:
+Aplikacja pokaże ekran importu. Wgrane pliki zostaną zapisane w wolumenie Dockera `pim-data`, więc zostaną po restarcie kontenera.
 
-```powershell
-docker compose up -d --build
+Ręczny wariant bez Compose:
+
+```bash
+docker build -t db-data-browser .
+docker volume create db-data-browser-pim-data
+docker run -d --name db-data-browser \
+  -p 8788:8788 \
+  -v db-data-browser-pim-data:/data \
+  --restart unless-stopped \
+  db-data-browser
+```
+
+Podgląd logów:
+
+```bash
+docker logs -f db-data-browser
 ```

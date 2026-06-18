@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import cgi
 import json
 import re
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -9,7 +10,25 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 
 APP_DIR = Path(__file__).resolve().parent
-DEFAULT_DATA_DIR = APP_DIR.parent / "dane-z-PIM"
+DEFAULT_DATA_DIR = APP_DIR / "data"
+REQUIRED_FILES = [
+    "productsModels.json",
+    "productsAttributes.json",
+    "products.json",
+    "buildingsElementsModels.json",
+    "buildingsElementsAttributes.json",
+    "building_elements.json",
+    "colors.json",
+    "colorParameters.json",
+    "colorGroups.json",
+    "colorGroupParameters.json",
+]
+CORE_FILES = [
+    "productsAttributes.json",
+    "products.json",
+    "buildingsElementsAttributes.json",
+    "building_elements.json",
+]
 
 
 def strip_html(value: str) -> str:
@@ -225,6 +244,57 @@ class PimData:
         return result
 
 
+class DataStore:
+    def __init__(self, data_dir: Path) -> None:
+        self.data_dir = data_dir
+        self.data: PimData | None = None
+        self.reload()
+
+    def status(self) -> dict:
+        files = []
+        for filename in REQUIRED_FILES:
+            path = self.data_dir / filename
+            files.append(
+                {
+                    "name": filename,
+                    "exists": path.exists(),
+                    "size": path.stat().st_size if path.exists() else 0,
+                    "required_for_browser": filename in CORE_FILES,
+                }
+            )
+        missing = [item["name"] for item in files if not item["exists"]]
+        missing_core = [filename for filename in CORE_FILES if not (self.data_dir / filename).exists()]
+        return {
+            "data_dir": str(self.data_dir),
+            "ready": self.data is not None,
+            "files": files,
+            "missing": missing,
+            "missing_core": missing_core,
+        }
+
+    def upload_files(self, uploaded_files: list[tuple[str, bytes]]) -> dict:
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        saved = []
+        for filename, content in uploaded_files:
+            safe_name = Path(filename).name
+            if safe_name not in REQUIRED_FILES:
+                continue
+            if not content:
+                continue
+            (self.data_dir / safe_name).write_bytes(content)
+            saved.append(safe_name)
+        self.reload()
+        status = self.status()
+        status["saved"] = saved
+        return status
+
+    def reload(self) -> None:
+        if all((self.data_dir / filename).exists() for filename in CORE_FILES):
+            self.data = PimData(self.data_dir)
+        else:
+            self.data = None
+
+
 def make_handler(data: PimData):
     class Handler(SimpleHTTPRequestHandler):
         def __init__(self, *args, **kwargs):
@@ -272,6 +342,95 @@ def make_handler(data: PimData):
     return Handler
 
 
+def make_store_handler(store: DataStore):
+    class Handler(SimpleHTTPRequestHandler):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, directory=str(APP_DIR / "static"), **kwargs)
+
+        def do_GET(self):
+            parsed = urlparse(self.path)
+            if parsed.path.startswith("/api/"):
+                self.handle_api(parsed)
+                return
+            if parsed.path == "/":
+                self.path = "/index.html"
+            super().do_GET()
+
+        def do_POST(self):
+            parsed = urlparse(self.path)
+            if parsed.path == "/api/source/upload":
+                self.handle_upload()
+                return
+            self.send_json({"error": "Not found"}, status=404)
+
+        def handle_api(self, parsed):
+            qs = parse_qs(parsed.query)
+            query = qs.get("q", [""])[0]
+            try:
+                if parsed.path == "/api/source/status":
+                    payload = store.status()
+                elif parsed.path == "/api/summary":
+                    if not store.data:
+                        self.send_json({"error": "Data source is not ready", **store.status()}, status=409)
+                        return
+                    payload = store.data.summary()
+                    payload["source_status"] = store.status()
+                elif parsed.path == "/api/products":
+                    payload = self.ready_data().list_products(query=query, category=qs.get("category", [""])[0])
+                elif parsed.path.startswith("/api/products/"):
+                    payload = self.ready_data().product_detail(int(unquote(parsed.path.rsplit("/", 1)[-1])))
+                elif parsed.path == "/api/systems":
+                    payload = self.ready_data().list_systems(query=query)
+                elif parsed.path.startswith("/api/systems/"):
+                    payload = self.ready_data().system_detail(int(unquote(parsed.path.rsplit("/", 1)[-1])))
+                else:
+                    self.send_json({"error": "Not found"}, status=404)
+                    return
+                self.send_json(payload)
+            except (KeyError, ValueError):
+                self.send_json({"error": "Record not found"}, status=404)
+
+        def ready_data(self) -> PimData:
+            if not store.data:
+                raise ValueError("Data source is not ready")
+            return store.data
+
+        def handle_upload(self):
+            content_type = self.headers.get("Content-Type", "")
+            if not content_type.startswith("multipart/form-data"):
+                self.send_json({"error": "Expected multipart/form-data"}, status=400)
+                return
+            form = cgi.FieldStorage(
+                fp=self.rfile,
+                headers=self.headers,
+                environ={
+                    "REQUEST_METHOD": "POST",
+                    "CONTENT_TYPE": content_type,
+                    "CONTENT_LENGTH": self.headers.get("Content-Length", "0"),
+                },
+            )
+            uploaded = []
+            fields = form["files"] if "files" in form else []
+            if not isinstance(fields, list):
+                fields = [fields]
+            for field in fields:
+                if not getattr(field, "filename", None):
+                    continue
+                uploaded.append((field.filename, field.file.read()))
+            self.send_json(store.upload_files(uploaded))
+
+        def send_json(self, payload: dict, status: int = 200):
+            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    return Handler
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Local browser for PIM product and system data.")
     parser.add_argument("--data-dir", default=str(DEFAULT_DATA_DIR), help="Folder with PIM JSON files.")
@@ -280,8 +439,8 @@ def main() -> None:
     args = parser.parse_args()
 
     data_dir = Path(args.data_dir).resolve()
-    data = PimData(data_dir)
-    server = ThreadingHTTPServer((args.host, args.port), make_handler(data))
+    store = DataStore(data_dir)
+    server = ThreadingHTTPServer((args.host, args.port), make_store_handler(store))
     print(f"DB Data Browser: http://{args.host}:{args.port}")
     print(f"Data source: {data_dir}")
     server.serve_forever()
