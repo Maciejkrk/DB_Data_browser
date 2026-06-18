@@ -204,10 +204,14 @@ def values_for_parent(all_attrs: list[dict], parent_id: int, attr_defs: dict[int
 def filter_values(record: dict, attr_defs: dict[int, dict]) -> dict[str, set[str]]:
     values: dict[str, set[str]] = {}
     for attr in latest_attrs(record):
+        if int(attr.get("ParentAttributeId") or 0) != 0:
+            continue
         attr_id = int(attr.get("AttributeId") or 0)
         attr_def = attr_defs.get(attr_id)
-        attr_type = (attr_def or {}).get("AttributeType")
-        if attr_type not in ("Checkboxes", "Select", "Boolean"):
+        if attr_is_deleted(attr_def):
+            continue
+        attr_type = str((attr_def or {}).get("AttributeType") or "").lower()
+        if attr_type not in ("checkboxes", "select", "boolean", "radio"):
             continue
         value = first_value(attr, attr_def)
         if value in (None, "", False):
@@ -217,35 +221,45 @@ def filter_values(record: dict, attr_defs: dict[int, dict]) -> dict[str, set[str
     return values
 
 
-def filter_catalog(records: list[dict], attr_defs: dict[int, dict]) -> list[dict]:
-    collected: dict[str, dict] = {}
-    for record in records:
-        for key, values in filter_values(record, attr_defs).items():
-            attr_id = int(key)
-            attr_def = attr_defs.get(attr_id)
-            entry = collected.setdefault(
-                key,
-                {
-                    "id": key,
-                    "label": attr_label(attr_def, attr_id),
-                    "type": "multi" if (attr_def or {}).get("AttributeType") in ("Checkboxes", "Boolean") else "single",
-                    "values": {},
-                },
-            )
-            for value in values:
-                entry["values"][value] = entry["values"].get(value, 0) + 1
+def filter_catalog(records: list[dict], attr_defs: dict[int, dict], selected: dict[str, list[str]] | None = None) -> list[dict]:
+    selected = selected or {}
+    record_values = [(record, filter_values(record, attr_defs)) for record in records]
+    filter_ids = sorted({key for _, values in record_values for key in values})
     filters = []
-    for entry in collected.values():
-        values = [{"value": value, "count": count} for value, count in sorted(entry["values"].items(), key=lambda item: item[0].lower())]
-        if values:
-            filters.append({**entry, "values": values})
+    for filter_id in filter_ids:
+        scoped_records = [
+            record
+            for record, values in record_values
+            if filter_record_values_match(values, {key: value for key, value in selected.items() if key != filter_id})
+        ]
+        value_counts: dict[str, int] = {}
+        for record in scoped_records:
+            values = filter_values(record, attr_defs).get(filter_id, set())
+            for value in values:
+                value_counts[value] = value_counts.get(value, 0) + 1
+        attr_id = int(filter_id)
+        attr_def = attr_defs.get(attr_id)
+        values = [{"value": value, "count": count} for value, count in sorted(value_counts.items(), key=lambda item: item[0].lower())]
+        if not values:
+            continue
+        selected_values = set(selected.get(filter_id) or [])
+        covers_all_scoped_records = len(values) == 1 and values[0]["count"] == len(scoped_records)
+        if covers_all_scoped_records and not selected_values:
+            continue
+        filters.append(
+            {
+                "id": filter_id,
+                "label": attr_label(attr_def, attr_id),
+                "type": "multi" if str((attr_def or {}).get("AttributeType") or "").lower() in ("checkboxes", "boolean") else "single",
+                "values": values,
+            }
+        )
     return sorted(filters, key=lambda item: item["label"].lower())
 
 
-def matches_filters(record: dict, attr_defs: dict[int, dict], selected: dict[str, list[str]]) -> bool:
+def filter_record_values_match(values: dict[str, set[str]], selected: dict[str, list[str]]) -> bool:
     if not selected:
         return True
-    values = filter_values(record, attr_defs)
     for key, wanted in selected.items():
         wanted_set = {str(item) for item in wanted if str(item)}
         if not wanted_set:
@@ -254,6 +268,12 @@ def matches_filters(record: dict, attr_defs: dict[int, dict], selected: dict[str
         if not record_values.intersection(wanted_set):
             return False
     return True
+
+
+def matches_filters(record: dict, attr_defs: dict[int, dict], selected: dict[str, list[str]]) -> bool:
+    if not selected:
+        return True
+    return filter_record_values_match(filter_values(record, attr_defs), selected)
 
 
 def selected_filters(qs: dict[str, list[str]]) -> dict[str, list[str]]:
@@ -533,15 +553,17 @@ class PimData:
         query = query.lower().strip()
         filters = filters or {}
         items = []
+        query_records = []
         for product in self.products:
             detail = self.product_detail(int(product["Id"]), compact=True)
             haystack = " ".join(str(value) for value in [detail["name"], detail.get("unit"), *detail.get("categories", [])]).lower()
             if query and query not in haystack:
                 continue
+            query_records.append(product)
             if not matches_filters(product, self.product_attr_defs, filters):
                 continue
             items.append(detail)
-        return {"items": items, "filters": filter_catalog(self.products, self.product_attr_defs)}
+        return {"items": items, "filters": filter_catalog(query_records, self.product_attr_defs, filters)}
 
     def product_detail(self, product_id: int, compact: bool = False) -> dict:
         product = self.product_index[product_id]
@@ -680,15 +702,17 @@ class PimData:
         query = query.lower().strip()
         filters = filters or {}
         items = []
+        query_records = []
         for element in self.elements:
             detail = self.system_detail(int(element["Id"]), compact=True)
             haystack = " ".join(str(value) for value in detail.values()).lower()
             if query and query not in haystack:
                 continue
+            query_records.append(element)
             if not matches_filters(element, self.element_attr_defs, filters):
                 continue
             items.append(detail)
-        return {"items": items, "filters": filter_catalog(self.elements, self.element_attr_defs)}
+        return {"items": items, "filters": filter_catalog(query_records, self.element_attr_defs, filters)}
 
     def list_colors(self, query: str = "", kind: str = "") -> dict:
         query = query.lower().strip()
