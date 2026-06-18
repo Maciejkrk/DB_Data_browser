@@ -540,8 +540,8 @@
       <div class="toolbar">
         <div class="tabs">
           <button id="productsTab" class="active" type="button">Products</button>
-          <button id="systemsTab" type="button">Systems</button>
-          <button id="colorsTab" type="button">Colors</button>
+          <button id="systemsTab" type="button">Building Elements</button>
+          <button id="colorsTab" type="button">Visual Attributes</button>
         </div>
         <input id="searchInput" type="search" placeholder="Search by name, category, type...">
         <select id="categorySelect" hidden></select>
@@ -683,8 +683,8 @@
       const summary = await api("/api/summary");
       $("summary").innerHTML = `
         <span class="pill">Products: ${esc(summary.products)}</span>
-        <span class="pill">Systems: ${esc(summary.systems)}</span>
-        <span class="pill">Colors/textures: ${esc(summary.colors || 0)}</span>
+        <span class="pill">Building elements: ${esc(summary.systems)}</span>
+        <span class="pill">Visual attributes: ${esc(summary.colors || 0)}</span>
         <span class="pill">Source: ${esc(summary.data_dir)}</span>
       `;
     }
@@ -714,7 +714,7 @@
       renderFilterOptions();
       if (state.mode === "colors") {
         renderList();
-        $("detail").innerHTML = `<div class="muted">Select a color group from the list on the left.</div>`;
+        $("detail").innerHTML = `<div class="muted">Select a visual attribute group from the list on the left.</div>`;
       } else {
         renderFilters();
         renderResults();
@@ -725,9 +725,9 @@
       const current = $("categorySelect").value;
       if (state.mode === "colors") {
         $("categorySelect").innerHTML = `
-          <option value="">All items in group</option>
-          <option value="simple">Colors only</option>
-          <option value="advanced">Textures only</option>
+          <option value="">All visual attributes in group</option>
+          <option value="simple">Simple</option>
+          <option value="advanced">Advanced</option>
         `;
       }
       $("categorySelect").value = current;
@@ -795,7 +795,7 @@
     }
 
     function renderResults() {
-      const label = state.mode === "products" ? "products" : "systems";
+      const label = state.mode === "products" ? "products" : "building elements";
       $("detail").innerHTML = `
         <div class="results-head">
           <h2>${state.items.length} ${label}</h2>
@@ -904,7 +904,7 @@
           <h2>${esc(data.name)}</h2>
           <div class="summary">
             <span class="pill">ID: ${esc(data.id)}</span>
-            <span class="pill">${data.type === "advanced" ? "Texture" : "Color"}</span>
+            <span class="pill">${data.type === "advanced" ? "Advanced" : "Simple"}</span>
             ${data.rgb ? `<span class="pill">RGB ${esc(data.rgb.r)}, ${esc(data.rgb.g)}, ${esc(data.rgb.b)}</span>` : ""}
           </div>
         </div>
@@ -972,7 +972,7 @@
     }
 
     function renderColorGallery(items) {
-      if (!items || !items.length) return `<div class="muted">No colors or textures for the selected filter.</div>`;
+      if (!items || !items.length) return `<div class="muted">No visual attributes for the selected filter.</div>`;
       return `<div class="color-gallery">${items.map((item) => `
         <div class="color-tile">
           <button type="button" data-color-id="${esc(item.id)}">
@@ -980,7 +980,7 @@
             <div class="color-tile-body">
               <strong>${esc(item.name)}</strong>
               <div class="item-meta">
-                <span>${item.type === "advanced" ? "texture" : "color"}</span>
+                <span>${item.type === "advanced" ? "advanced" : "simple"}</span>
                 ${item.rgb ? `<span>RGB ${esc(item.rgb.r)}, ${esc(item.rgb.g)}, ${esc(item.rgb.b)}</span>` : ""}
                 ${(item.used_by_products || []).length ? `<span>products: ${esc(item.used_by_products.length)}</span>` : ""}
               </div>
@@ -1019,7 +1019,7 @@
       $("modalBody").innerHTML = `
         <div class="material-preview">
           <canvas id="materialPreviewCanvas" width="960" height="600"></canvas>
-          <div class="muted">${data.type === "advanced" ? "Main texture with Normal Map when available." : "Color preview from RGB values."}</div>
+          <div class="muted">${data.type === "advanced" ? "Main texture with Normal Map when available." : "Simple visual attribute preview from RGB values."}</div>
         </div>
       `;
       renderMaterialCube($("materialPreviewCanvas"), data);
@@ -1296,15 +1296,15 @@
       const groups = links.groups || [];
       if (!structures.length && !groups.length) return "";
       return `<details open>
-        <summary>Product colors, structures and textures</summary>
-        ${structures.length ? `<h2>Structures / textures</h2><div class="color-gallery">${structures.map((item) => `
+        <summary>Product visual attributes</summary>
+        ${structures.length ? `<h2>Direct visual attributes</h2><div class="color-gallery">${structures.map((item) => `
           <div class="color-tile"><button type="button" data-color-id="${esc(item.id)}">${colorTilePreview(item)}<div class="color-tile-body"><strong>${esc(item.name)}</strong></div></button></div>
         `).join("")}</div>` : ""}
-        ${groups.length ? `<h2>Color groups</h2><div class="relation-list">${groups.map((group) => `
+        ${groups.length ? `<h2>Visual attribute groups</h2><div class="relation-list">${groups.map((group) => `
           <div class="relation-item">
             <strong>${esc(group.name)}</strong>
-            <div class="muted">${esc(group.count)} colors/textures</div>
-            <div class="media-grid">${(group.sample_colors || []).slice(0, 8).map((item) => `<div class="media-card">${colorTilePreview(item)}<a>${esc(item.name)}</a></div>`).join("")}</div>
+            <div class="muted">${esc(group.count)} visual attributes</div>
+            <button class="clear-filters" type="button" data-color-group-id="${esc(group.id)}">Open full group</button>
           </div>
         `).join("")}</div>` : ""}
       </details>`;
@@ -1340,6 +1340,19 @@
     function attachColorTileEvents() {
       for (const button of document.querySelectorAll("[data-color-id]")) {
         button.addEventListener("click", () => openColorModal(Number(button.dataset.colorId)));
+      }
+      for (const button of document.querySelectorAll("[data-color-group-id]")) {
+        button.addEventListener("click", async () => {
+          state.mode = "colors";
+          state.selectedId = Number(button.dataset.colorGroupId);
+          $("productsTab").classList.remove("active");
+          $("systemsTab").classList.remove("active");
+          $("colorsTab").classList.add("active");
+          $("categorySelect").hidden = false;
+          $("searchInput").value = "";
+          await loadList();
+          await loadColorGroup(Number(button.dataset.colorGroupId));
+        });
       }
     }
 

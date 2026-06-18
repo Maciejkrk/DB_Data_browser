@@ -270,7 +270,7 @@ def rows_for_parent(all_attrs: list[dict], parent_id: int, attr_defs: dict[int, 
         grouped.setdefault(key, []).append(item)
     rows = []
     for (row_index, row_hash), items in sorted(grouped.items()):
-        rows.append({"row": row_index, "hash": row_hash or str((items[0] or {}).get("hash") or ""), "values": items})
+        rows.append({"row": row_index, "hash": str((items[0] or {}).get("hash") or row_hash), "values": items})
     return rows
 
 
