@@ -24,6 +24,7 @@ http://127.0.0.1:8788
 ```
 
 Przy pierwszym wejściu aplikacja pokaże ekran importu plików PIM.
+Po imporcie możesz wrócić do tego ekranu przyciskiem `Zmień pliki wsadowe`.
 
 ## Pliki Do Importu
 
@@ -55,6 +56,7 @@ building_elements.json
 
 - lista produktów z wyszukiwaniem i filtrem kategorii,
 - lista systemów budowlanych z wyszukiwaniem,
+- lista kolorów i tekstur z podglądem RGB, miniatur i map tekstur,
 - podgląd odkodowanych atrybutów PIM,
 - sekcje dla cech własnych, informacji produktowych, opakowań, wariantów, dokumentów i typoszeregu,
 - sekcje dla wariantów systemu, warstw i produktów przypisanych do warstw.

@@ -58,7 +58,7 @@
     }
     .tabs {
       display: grid;
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: repeat(3, 1fr);
       border: 1px solid var(--line);
       border-radius: 6px;
       overflow: hidden;
@@ -171,6 +171,25 @@
       color: var(--text);
       font-weight: 700;
       overflow-wrap: anywhere;
+    }
+    .swatch {
+      width: 100%;
+      aspect-ratio: 4 / 3;
+      display: block;
+      background:
+        linear-gradient(45deg, #d0d5dd 25%, transparent 25%),
+        linear-gradient(-45deg, #d0d5dd 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, #d0d5dd 75%),
+        linear-gradient(-45deg, transparent 75%, #d0d5dd 75%);
+      background-size: 16px 16px;
+      background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+    }
+    .source-button {
+      padding: 8px 10px;
+      border-radius: 4px;
+      background: var(--ink-soft);
+      border: 1px solid var(--line);
+      color: var(--text);
     }
     .field, details {
       border: 1px solid var(--line);
@@ -310,6 +329,7 @@
   <header>
     <h1>DB Data Browser</h1>
     <div id="summary" class="summary">Ładowanie danych...</div>
+    <button id="changeSourceBtn" class="source-button" type="button">Zmień pliki wsadowe</button>
   </header>
   <main>
     <aside>
@@ -317,6 +337,7 @@
         <div class="tabs">
           <button id="productsTab" class="active" type="button">Produkty</button>
           <button id="systemsTab" type="button">Systemy</button>
+          <button id="colorsTab" type="button">Kolory</button>
         </div>
         <input id="searchInput" type="search" placeholder="Szukaj po nazwie, kategorii, typie...">
         <select id="categorySelect"></select>
@@ -362,8 +383,10 @@
       state.selectedId = null;
       $("productsTab").classList.toggle("active", mode === "products");
       $("systemsTab").classList.toggle("active", mode === "systems");
-      $("categorySelect").hidden = mode !== "products";
+      $("colorsTab").classList.toggle("active", mode === "colors");
+      $("categorySelect").hidden = mode === "systems";
       $("searchInput").value = "";
+      renderFilterOptions();
       loadList();
     }
 
@@ -404,6 +427,20 @@
       $("uploadSourceFilesBtn").addEventListener("click", uploadSourceFiles);
     }
 
+    async function changeSourceFiles() {
+      const ok = window.confirm("Czy wyczyścić aktualnie wgrane pliki wsadowe i przejść do importu nowego zestawu JSON?");
+      if (!ok) return;
+      const response = await fetch("/api/source/clear", { method: "POST" });
+      const data = await response.json();
+      if (!response.ok) {
+        $("detail").innerHTML = `<div class="warn">${esc(data.error || "Nie udało się wyczyścić plików.")}</div>`;
+        return;
+      }
+      state.items = [];
+      state.selectedId = null;
+      renderImport(data);
+    }
+
     async function uploadSourceFiles() {
       const input = $("sourceFilesInput");
       const status = $("uploadStatus");
@@ -434,30 +471,43 @@
       $("summary").innerHTML = `
         <span class="pill">Produkty: ${esc(summary.products)}</span>
         <span class="pill">Systemy: ${esc(summary.systems)}</span>
+        <span class="pill">Kolory/tekstury: ${esc(summary.colors || 0)}</span>
         <span class="pill">Źródło: ${esc(summary.data_dir)}</span>
       `;
     }
 
     async function loadList() {
       const query = encodeURIComponent($("searchInput").value.trim());
-      const category = encodeURIComponent($("categorySelect").value || "");
+      const filter = encodeURIComponent($("categorySelect").value || "");
       const url = state.mode === "products"
-        ? `/api/products?q=${query}&category=${category}`
-        : `/api/systems?q=${query}`;
+        ? `/api/products?q=${query}&category=${filter}`
+        : state.mode === "colors"
+          ? `/api/colors?q=${query}&kind=${filter}`
+          : `/api/systems?q=${query}`;
       const data = await api(url);
       state.items = data.items || [];
       if (state.mode === "products") {
         state.categories = data.categories || [];
-        renderCategories();
+      } else if (state.mode === "colors") {
+        state.categories = ["simple", "advanced"];
       }
+      renderFilterOptions();
       renderList();
       $("detail").innerHTML = `<div class="muted">Znaleziono ${state.items.length} rekordów. Wybierz pozycję z listy.</div>`;
     }
 
-    function renderCategories() {
+    function renderFilterOptions() {
       const current = $("categorySelect").value;
-      $("categorySelect").innerHTML = `<option value="">Wszystkie kategorie</option>` +
-        state.categories.map((item) => `<option value="${esc(item)}">${esc(item)}</option>`).join("");
+      if (state.mode === "products") {
+        $("categorySelect").innerHTML = `<option value="">Wszystkie kategorie</option>` +
+          state.categories.map((item) => `<option value="${esc(item)}">${esc(item)}</option>`).join("");
+      } else if (state.mode === "colors") {
+        $("categorySelect").innerHTML = `
+          <option value="">Kolory i tekstury</option>
+          <option value="simple">Tylko kolory</option>
+          <option value="advanced">Tylko tekstury</option>
+        `;
+      }
       $("categorySelect").value = current;
     }
 
@@ -465,7 +515,9 @@
       $("list").innerHTML = state.items.map((item) => {
         const meta = state.mode === "products"
           ? [item.unit ? `jedn.: ${item.unit}` : "", ...(item.categories || []).slice(0, 3)]
-          : [item.type, item.insulation, item.bim_type];
+          : state.mode === "colors"
+            ? [item.type === "advanced" ? "tekstura" : "kolor", item.rgb ? `RGB ${item.rgb.r}, ${item.rgb.g}, ${item.rgb.b}` : ""]
+            : [item.type, item.insulation, item.bim_type];
         return `<button class="item${item.id === state.selectedId ? " active" : ""}" type="button" data-id="${esc(item.id)}">
           <span class="item-title">${esc(item.name)}</span>
           <span class="item-meta">${meta.filter(Boolean).map((value) => `<span>${esc(value)}</span>`).join("")}</span>
@@ -479,8 +531,9 @@
     async function loadDetail(id) {
       state.selectedId = id;
       renderList();
-      const data = await api(state.mode === "products" ? `/api/products/${id}` : `/api/systems/${id}`);
-      $("detail").innerHTML = state.mode === "products" ? renderProduct(data) : renderSystem(data);
+      const path = state.mode === "products" ? `/api/products/${id}` : state.mode === "colors" ? `/api/colors/${id}` : `/api/systems/${id}`;
+      const data = await api(path);
+      $("detail").innerHTML = state.mode === "products" ? renderProduct(data) : state.mode === "colors" ? renderColor(data) : renderSystem(data);
     }
 
     function renderProduct(data) {
@@ -524,6 +577,38 @@
         ${systemVariants(data.system_variants)}
         ${filesSection(data.files || [])}
       `;
+    }
+
+    function renderColor(data) {
+      return `
+        <div class="detail-head">
+          <h2>${esc(data.name)}</h2>
+          <div class="summary">
+            <span class="pill">ID: ${esc(data.id)}</span>
+            <span class="pill">${data.type === "advanced" ? "Tekstura" : "Kolor"}</span>
+            ${data.rgb ? `<span class="pill">RGB ${esc(data.rgb.r)}, ${esc(data.rgb.g)}, ${esc(data.rgb.b)}</span>` : ""}
+          </div>
+        </div>
+        ${colorPreview(data)}
+        ${mediaGrid(data.media)}
+        <div class="data-table">
+          <table>
+            <thead><tr><th>Parametr</th><th>Wartość</th></tr></thead>
+            <tbody>${(data.parameters || []).map((item) => `
+              <tr><td>${esc(item.name)}</td><td>${esc(item.value)}</td></tr>
+            `).join("")}</tbody>
+          </table>
+        </div>
+      `;
+    }
+
+    function colorPreview(data) {
+      if (data.thumbnail) {
+        return `<div class="media-grid"><div class="media-card"><img src="${esc(data.thumbnail)}" alt="${esc(data.name)}"><a href="${esc(data.thumbnail)}" target="_blank" rel="noreferrer">${esc(data.name)}</a></div></div>`;
+      }
+      if (!data.rgb) return "";
+      const color = `rgb(${Number(data.rgb.r) || 0}, ${Number(data.rgb.g) || 0}, ${Number(data.rgb.b) || 0})`;
+      return `<div class="media-grid"><div class="media-card"><span class="swatch" style="background:${esc(color)}"></span><a>${esc(data.name)}</a></div></div>`;
     }
 
     function mediaGrid(items) {
@@ -662,6 +747,8 @@
 
     $("productsTab").addEventListener("click", () => setMode("products"));
     $("systemsTab").addEventListener("click", () => setMode("systems"));
+    $("colorsTab").addEventListener("click", () => setMode("colors"));
+    $("changeSourceBtn").addEventListener("click", () => changeSourceFiles());
     $("searchInput").addEventListener("input", () => loadList());
     $("categorySelect").addEventListener("change", () => loadList());
 

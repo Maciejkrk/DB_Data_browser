@@ -61,6 +61,20 @@ def first_value(attr: dict, attr_def: dict | None = None) -> object:
     return None
 
 
+def first_parameter_value(param: dict) -> object:
+    if param.get("varcharValue") not in (None, ""):
+        return param["varcharValue"]
+    if param.get("TextValue") not in (None, ""):
+        return strip_html(str(param["TextValue"]))
+    if param.get("NumberValue") is not None:
+        return param["NumberValue"]
+    if param.get("IntValue") is not None:
+        return param["IntValue"]
+    if param.get("BooleanValue") is True:
+        return True
+    return None
+
+
 def option_name(attr_def: dict | None, option_id: object) -> str | None:
     if not attr_def:
         return None
@@ -180,6 +194,35 @@ def file_media(version: dict) -> list[dict]:
     return media
 
 
+def parameter_media(version: dict) -> list[dict]:
+    media = []
+    for item in version.get("filesParameters") or []:
+        url = item.get("fileUrl") or ""
+        name = item.get("fileName") or Path(url).name or item.get("parameterName") or "plik"
+        ext = str(name or url).rsplit(".", 1)[-1].lower() if "." in str(name or url) else ""
+        media.append(
+            {
+                "name": name,
+                "url": url,
+                "kind": "image" if ext in {"jpg", "jpeg", "png", "webp", "gif"} else "file",
+                "parameter": item.get("parameterName"),
+            }
+        )
+    return media
+
+
+def version_parameters(version: dict) -> dict[str, object]:
+    values = {}
+    for param in version.get("parameters") or []:
+        name = str(param.get("parameterName") or "")
+        if not name:
+            continue
+        value = first_parameter_value(param)
+        if value not in (None, "", False):
+            values[name] = value
+    return values
+
+
 def rows_as_table(rows: list[dict]) -> dict:
     columns: dict[str, str] = {}
     table_rows = []
@@ -203,14 +246,20 @@ class PimData:
         self.element_attr_defs, _ = attribute_maps(load_json(data_dir / "buildingsElementsAttributes.json"))
         self.products = load_json(data_dir / "products.json").get("products", [])
         self.elements = load_json(data_dir / "building_elements.json").get("buildingElements", [])
+        self.colors = load_json(data_dir / "colors.json").get("colors", []) if (data_dir / "colors.json").exists() else []
+        self.color_groups = load_json(data_dir / "colorGroups.json").get("colorGroups", []) if (data_dir / "colorGroups.json").exists() else []
         self.product_index = {int(product["Id"]): product for product in self.products}
         self.element_index = {int(element["Id"]): element for element in self.elements}
+        self.color_index = {int(color["Id"]): color for color in self.colors}
+        self.color_group_index = {int(group["Id"]): group for group in self.color_groups}
 
     def summary(self) -> dict:
         return {
             "data_dir": str(self.data_dir),
             "products": len(self.products),
             "systems": len(self.elements),
+            "colors": len(self.colors),
+            "color_groups": len(self.color_groups),
             "product_attributes": len(self.product_attr_defs),
             "system_attributes": len(self.element_attr_defs),
         }
@@ -308,6 +357,62 @@ class PimData:
             if query and query not in haystack:
                 continue
             items.append(detail)
+        return {"items": items}
+
+    def list_colors(self, query: str = "", kind: str = "") -> dict:
+        query = query.lower().strip()
+        kind = kind.lower().strip()
+        items = []
+        for color in self.colors:
+            detail = self.color_detail(int(color["Id"]), compact=True)
+            haystack = " ".join(str(value) for value in detail.values()).lower()
+            if query and query not in haystack:
+                continue
+            if kind and detail.get("type") != kind:
+                continue
+            items.append(detail)
+        return {"items": items, "groups": self.list_color_groups()["items"]}
+
+    def color_detail(self, color_id: int, compact: bool = False) -> dict:
+        color = self.color_index[color_id]
+        version = (color.get("dataVersions") or [{}])[-1]
+        params = version_parameters(version)
+        media = parameter_media(version)
+        thumbnail = next((item["url"] for item in media if item.get("parameter") == "Thumbnail"), "")
+        main_texture = next((item["url"] for item in media if item.get("parameter") == "MainTexture"), "")
+        rgb = None
+        if all(key in params for key in ("r", "g", "b")):
+            rgb = {"r": params["r"], "g": params["g"], "b": params["b"]}
+        result = {
+            "id": color_id,
+            "name": str(params.get("name") or f"Kolor {color_id}"),
+            "type": str(params.get("type") or ""),
+            "rgb": rgb,
+            "thumbnail": thumbnail or main_texture,
+            "media": media,
+        }
+        if compact:
+            return result
+        result["parameters"] = [{"name": key, "value": value} for key, value in params.items()]
+        return result
+
+    def list_color_groups(self) -> dict:
+        items = []
+        for group in self.color_groups:
+            version = (group.get("dataVersions") or [{}])[-1]
+            params = version_parameters(version)
+            media = parameter_media(version)
+            color_ids = version.get("colorList") or []
+            items.append(
+                {
+                    "id": int(group["Id"]),
+                    "name": str(params.get("name") or f"Grupa {group['Id']}"),
+                    "description": str(params.get("description") or ""),
+                    "count": len(color_ids),
+                    "color_ids": color_ids,
+                    "media": media,
+                }
+            )
         return {"items": items}
 
     def system_detail(self, element_id: int, compact: bool = False) -> dict:
@@ -437,6 +542,15 @@ class DataStore:
         status["saved"] = saved
         return status
 
+    def clear(self) -> dict:
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        for filename in REQUIRED_FILES:
+            path = self.data_dir / filename
+            if path.exists():
+                path.unlink()
+        self.reload()
+        return self.status()
+
     def reload(self) -> None:
         if all((self.data_dir / filename).exists() for filename in CORE_FILES):
             self.data = PimData(self.data_dir)
@@ -472,6 +586,12 @@ def make_handler(data: PimData):
                     payload = data.list_systems(query=query)
                 elif parsed.path.startswith("/api/systems/"):
                     payload = data.system_detail(int(unquote(parsed.path.rsplit("/", 1)[-1])))
+                elif parsed.path == "/api/colors":
+                    payload = data.list_colors(query=query, kind=qs.get("kind", [""])[0])
+                elif parsed.path.startswith("/api/colors/"):
+                    payload = data.color_detail(int(unquote(parsed.path.rsplit("/", 1)[-1])))
+                elif parsed.path == "/api/color-groups":
+                    payload = data.list_color_groups()
                 else:
                     self.send_json({"error": "Not found"}, status=404)
                     return
@@ -510,6 +630,9 @@ def make_store_handler(store: DataStore):
             if parsed.path == "/api/source/upload":
                 self.handle_upload()
                 return
+            if parsed.path == "/api/source/clear":
+                self.send_json(store.clear())
+                return
             self.send_json({"error": "Not found"}, status=404)
 
         def handle_api(self, parsed):
@@ -532,6 +655,12 @@ def make_store_handler(store: DataStore):
                     payload = self.ready_data().list_systems(query=query)
                 elif parsed.path.startswith("/api/systems/"):
                     payload = self.ready_data().system_detail(int(unquote(parsed.path.rsplit("/", 1)[-1])))
+                elif parsed.path == "/api/colors":
+                    payload = self.ready_data().list_colors(query=query, kind=qs.get("kind", [""])[0])
+                elif parsed.path.startswith("/api/colors/"):
+                    payload = self.ready_data().color_detail(int(unquote(parsed.path.rsplit("/", 1)[-1])))
+                elif parsed.path == "/api/color-groups":
+                    payload = self.ready_data().list_color_groups()
                 else:
                     self.send_json({"error": "Not found"}, status=404)
                     return
