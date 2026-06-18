@@ -156,6 +156,75 @@ def values_for_parent(all_attrs: list[dict], parent_id: int, attr_defs: dict[int
     return values
 
 
+def filter_values(record: dict, attr_defs: dict[int, dict]) -> dict[str, set[str]]:
+    values: dict[str, set[str]] = {}
+    for attr in latest_attrs(record):
+        attr_id = int(attr.get("AttributeId") or 0)
+        attr_def = attr_defs.get(attr_id)
+        attr_type = (attr_def or {}).get("AttributeType")
+        if attr_type not in ("Checkboxes", "Select", "Boolean"):
+            continue
+        value = first_value(attr, attr_def)
+        if value in (None, "", False):
+            continue
+        key = str(attr_id)
+        values.setdefault(key, set()).add("Yes" if value is True else str(value))
+    return values
+
+
+def filter_catalog(records: list[dict], attr_defs: dict[int, dict]) -> list[dict]:
+    collected: dict[str, dict] = {}
+    for record in records:
+        for key, values in filter_values(record, attr_defs).items():
+            attr_id = int(key)
+            attr_def = attr_defs.get(attr_id)
+            entry = collected.setdefault(
+                key,
+                {
+                    "id": key,
+                    "label": attr_label(attr_def, attr_id),
+                    "type": "multi" if (attr_def or {}).get("AttributeType") in ("Checkboxes", "Boolean") else "single",
+                    "values": {},
+                },
+            )
+            for value in values:
+                entry["values"][value] = entry["values"].get(value, 0) + 1
+    filters = []
+    for entry in collected.values():
+        values = [{"value": value, "count": count} for value, count in sorted(entry["values"].items(), key=lambda item: item[0].lower())]
+        if values:
+            filters.append({**entry, "values": values})
+    return sorted(filters, key=lambda item: item["label"].lower())
+
+
+def matches_filters(record: dict, attr_defs: dict[int, dict], selected: dict[str, list[str]]) -> bool:
+    if not selected:
+        return True
+    values = filter_values(record, attr_defs)
+    for key, wanted in selected.items():
+        wanted_set = {str(item) for item in wanted if str(item)}
+        if not wanted_set:
+            continue
+        record_values = values.get(str(key), set())
+        if not record_values.intersection(wanted_set):
+            return False
+    return True
+
+
+def selected_filters(qs: dict[str, list[str]]) -> dict[str, list[str]]:
+    filters: dict[str, list[str]] = {}
+    for key, values in qs.items():
+        if not key.startswith("f_"):
+            continue
+        filter_id = key[2:]
+        selected = []
+        for value in values:
+            selected.extend(item for item in str(value).split("|") if item)
+        if selected:
+            filters[filter_id] = selected
+    return filters
+
+
 def rows_for_parent(all_attrs: list[dict], parent_id: int, attr_defs: dict[int, dict]) -> list[dict]:
     grouped: dict[tuple[int, str], list[dict]] = {}
     for item in values_for_parent(all_attrs, parent_id, attr_defs):
@@ -271,22 +340,19 @@ class PimData:
             "system_attributes": len(self.element_attr_defs),
         }
 
-    def list_products(self, query: str = "", category: str = "") -> dict:
+    def list_products(self, query: str = "", filters: dict[str, list[str]] | None = None) -> dict:
         query = query.lower().strip()
-        category = category.lower().strip()
+        filters = filters or {}
         items = []
-        categories = set()
         for product in self.products:
             detail = self.product_detail(int(product["Id"]), compact=True)
             haystack = " ".join(str(value) for value in [detail["name"], detail.get("unit"), *detail.get("categories", [])]).lower()
-            for item in detail.get("categories", []):
-                categories.add(str(item))
             if query and query not in haystack:
                 continue
-            if category and category not in " ".join(detail.get("categories", [])).lower():
+            if not matches_filters(product, self.product_attr_defs, filters):
                 continue
             items.append(detail)
-        return {"items": items, "categories": sorted(categories)}
+        return {"items": items, "filters": filter_catalog(self.products, self.product_attr_defs)}
 
     def product_detail(self, product_id: int, compact: bool = False) -> dict:
         product = self.product_index[product_id]
@@ -309,6 +375,7 @@ class PimData:
             "unit": unit,
             "categories": categories,
             "attribute_count": len(attrs),
+            "thumbnail": next((item["url"] for item in file_media(latest_version) if item.get("kind") == "image"), ""),
         }
         if compact:
             return result
@@ -420,16 +487,19 @@ class PimData:
             )
         return features
 
-    def list_systems(self, query: str = "") -> dict:
+    def list_systems(self, query: str = "", filters: dict[str, list[str]] | None = None) -> dict:
         query = query.lower().strip()
+        filters = filters or {}
         items = []
         for element in self.elements:
             detail = self.system_detail(int(element["Id"]), compact=True)
             haystack = " ".join(str(value) for value in detail.values()).lower()
             if query and query not in haystack:
                 continue
+            if not matches_filters(element, self.element_attr_defs, filters):
+                continue
             items.append(detail)
-        return {"items": items}
+        return {"items": items, "filters": filter_catalog(self.elements, self.element_attr_defs)}
 
     def list_colors(self, query: str = "", kind: str = "") -> dict:
         query = query.lower().strip()
@@ -524,6 +594,7 @@ class PimData:
             "type": next((item["value"] for item in root_values if item["attribute_id"] == 281), ""),
             "insulation": next((item["value"] for item in root_values if item["attribute_id"] == 292), ""),
             "bim_type": next((item["value"] for item in root_values if item["attribute_id"] == 299), ""),
+            "thumbnail": next((item["url"] for item in file_media(latest_version) if item.get("kind") == "image"), ""),
         }
         if compact:
             return result
@@ -672,11 +743,11 @@ def make_handler(data: PimData):
                 if parsed.path == "/api/summary":
                     payload = data.summary()
                 elif parsed.path == "/api/products":
-                    payload = data.list_products(query=query, category=qs.get("category", [""])[0])
+                    payload = data.list_products(query=query, filters=selected_filters(qs))
                 elif parsed.path.startswith("/api/products/"):
                     payload = data.product_detail(int(unquote(parsed.path.rsplit("/", 1)[-1])))
                 elif parsed.path == "/api/systems":
-                    payload = data.list_systems(query=query)
+                    payload = data.list_systems(query=query, filters=selected_filters(qs))
                 elif parsed.path.startswith("/api/systems/"):
                     payload = data.system_detail(int(unquote(parsed.path.rsplit("/", 1)[-1])))
                 elif parsed.path == "/api/colors":
@@ -743,11 +814,11 @@ def make_store_handler(store: DataStore):
                     payload = store.data.summary()
                     payload["source_status"] = store.status()
                 elif parsed.path == "/api/products":
-                    payload = self.ready_data().list_products(query=query, category=qs.get("category", [""])[0])
+                    payload = self.ready_data().list_products(query=query, filters=selected_filters(qs))
                 elif parsed.path.startswith("/api/products/"):
                     payload = self.ready_data().product_detail(int(unquote(parsed.path.rsplit("/", 1)[-1])))
                 elif parsed.path == "/api/systems":
-                    payload = self.ready_data().list_systems(query=query)
+                    payload = self.ready_data().list_systems(query=query, filters=selected_filters(qs))
                 elif parsed.path.startswith("/api/systems/"):
                     payload = self.ready_data().system_detail(int(unquote(parsed.path.rsplit("/", 1)[-1])))
                 elif parsed.path == "/api/colors":

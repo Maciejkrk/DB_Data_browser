@@ -93,6 +93,50 @@
       max-height: calc(100vh - 204px);
       overflow: auto;
     }
+    .filters {
+      display: grid;
+      gap: 12px;
+      max-height: calc(100vh - 204px);
+      overflow: auto;
+      padding: 12px;
+    }
+    .filter-group {
+      display: grid;
+      gap: 7px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+    }
+    .filter-title {
+      font-weight: 800;
+      line-height: 1.3;
+    }
+    .filter-option {
+      display: grid;
+      grid-template-columns: 18px 1fr;
+      gap: 7px;
+      align-items: start;
+      color: #344054;
+      line-height: 1.35;
+    }
+    .filter-option input {
+      width: auto;
+      margin: 2px 0 0;
+      padding: 0;
+    }
+    .filter-count {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .clear-filters {
+      width: 100%;
+      padding: 9px 10px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: var(--ink-soft);
+      color: var(--text);
+    }
     .item {
       width: 100%;
       display: block;
@@ -117,6 +161,54 @@
       padding: 14px;
       max-height: calc(100vh - 88px);
       overflow: auto;
+    }
+    .results-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .results-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+      gap: 12px;
+    }
+    .result-card {
+      display: grid;
+      gap: 8px;
+      width: 100%;
+      min-height: 170px;
+      padding: 0;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      overflow: hidden;
+      background: #fff;
+      text-align: left;
+      color: var(--text);
+    }
+    .result-card:hover {
+      border-color: var(--accent);
+      box-shadow: 0 4px 14px rgba(15, 23, 42, .12);
+    }
+    .result-card img,
+    .result-card .result-placeholder {
+      width: 100%;
+      aspect-ratio: 4 / 3;
+      object-fit: cover;
+      display: block;
+      background: var(--ink-soft);
+    }
+    .result-placeholder {
+      display: grid;
+      place-items: center;
+      color: var(--muted);
+      font-size: 28px;
+    }
+    .result-title {
+      padding: 0 10px 10px;
+      font-weight: 800;
+      line-height: 1.35;
     }
     .summary {
       display: flex;
@@ -359,7 +451,7 @@
       width: auto;
       padding: 8px 10px;
       border-radius: 4px;
-      background: var(--secondary);
+      background: var(--accent);
       color: #fff;
     }
     .modal-body { padding: 14px; }
@@ -401,6 +493,7 @@
     @media (max-width: 940px) {
       main { grid-template-columns: 1fr; }
       .list, .content { max-height: none; }
+      .filters { max-height: none; }
       .grid { grid-template-columns: 1fr; }
       .import-list { grid-template-columns: 1fr; }
     }
@@ -421,7 +514,7 @@
           <button id="colorsTab" type="button">Colors</button>
         </div>
         <input id="searchInput" type="search" placeholder="Search by name, category, type...">
-        <select id="categorySelect"></select>
+        <select id="categorySelect" hidden></select>
       </div>
       <div id="list" class="list"></div>
     </aside>
@@ -441,7 +534,7 @@
     </div>
   </div>
   <script>
-    const state = { mode: "products", items: [], selectedId: null, categories: [] };
+    const state = { mode: "products", items: [], selectedId: null, filters: { products: {}, systems: {}, colors: {} }, filterDefs: [] };
     const REQUIRED_FILES = [
       "productsModels.json",
       "productsAttributes.json",
@@ -474,7 +567,7 @@
       $("productsTab").classList.toggle("active", mode === "products");
       $("systemsTab").classList.toggle("active", mode === "systems");
       $("colorsTab").classList.toggle("active", mode === "colors");
-      $("categorySelect").hidden = mode === "systems";
+      $("categorySelect").hidden = mode !== "colors";
       $("searchInput").value = "";
       renderFilterOptions();
       loadList();
@@ -568,34 +661,37 @@
 
     async function loadList() {
       const query = encodeURIComponent($("searchInput").value.trim());
-      const filter = encodeURIComponent($("categorySelect").value || "");
+      const params = new URLSearchParams();
+      if (query) params.set("q", $("searchInput").value.trim());
+      for (const [key, values] of Object.entries(state.filters[state.mode] || {})) {
+        for (const value of values || []) {
+          params.append(`f_${key}`, value);
+        }
+      }
+      const suffix = params.toString() ? `?${params.toString()}` : "";
       const url = state.mode === "products"
-        ? `/api/products?q=${query}&category=${filter}`
+        ? `/api/products${suffix}`
         : state.mode === "colors"
           ? `/api/color-groups`
-          : `/api/systems?q=${query}`;
+          : `/api/systems${suffix}`;
       const data = await api(url);
       state.items = state.mode === "colors"
         ? (data.items || []).filter((item) => !query || `${item.name} ${item.description || ""}`.toLowerCase().includes(decodeURIComponent(query).toLowerCase()))
         : data.items || [];
-      if (state.mode === "products") {
-        state.categories = data.categories || [];
-      } else if (state.mode === "colors") {
-        state.categories = ["simple", "advanced"];
-      }
+      state.filterDefs = data.filters || [];
       renderFilterOptions();
-      renderList();
-      $("detail").innerHTML = state.mode === "colors"
-        ? `<div class="muted">Select a color group from the list on the left.</div>`
-        : `<div class="muted">Found ${state.items.length} records. Select an item from the list.</div>`;
+      if (state.mode === "colors") {
+        renderList();
+        $("detail").innerHTML = `<div class="muted">Select a color group from the list on the left.</div>`;
+      } else {
+        renderFilters();
+        renderResults();
+      }
     }
 
     function renderFilterOptions() {
       const current = $("categorySelect").value;
-      if (state.mode === "products") {
-        $("categorySelect").innerHTML = `<option value="">All categories</option>` +
-          state.categories.map((item) => `<option value="${esc(item)}">${esc(item)}</option>`).join("");
-      } else if (state.mode === "colors") {
+      if (state.mode === "colors") {
         $("categorySelect").innerHTML = `
           <option value="">All items in group</option>
           <option value="simple">Colors only</option>
@@ -603,6 +699,85 @@
         `;
       }
       $("categorySelect").value = current;
+    }
+
+    function renderFilters() {
+      const filters = state.filterDefs || [];
+      const selected = state.filters[state.mode] || {};
+      $("list").innerHTML = `
+        <div class="filters">
+          <button class="clear-filters" type="button" data-clear-filters>Clear filters</button>
+          ${filters.map((filter) => `
+            <div class="filter-group">
+              <div class="filter-title">${esc(filter.label)}</div>
+              ${filter.type === "single" ? singleFilter(filter, selected[filter.id] || []) : multiFilter(filter, selected[filter.id] || [])}
+            </div>
+          `).join("") || `<div class="muted">No selection filters found in this dataset.</div>`}
+        </div>
+      `;
+      const clearButton = document.querySelector("[data-clear-filters]");
+      if (clearButton) {
+        clearButton.addEventListener("click", () => {
+          state.filters[state.mode] = {};
+          loadList();
+        });
+      }
+      for (const input of document.querySelectorAll("[data-filter-id]")) {
+        input.addEventListener("change", () => updateFilter(input));
+      }
+    }
+
+    function singleFilter(filter, selected) {
+      const current = selected[0] || "";
+      return `<select data-filter-id="${esc(filter.id)}" data-filter-type="single">
+        <option value="">Any</option>
+        ${(filter.values || []).map((item) => `<option value="${esc(item.value)}"${item.value === current ? " selected" : ""}>${esc(item.value)} (${esc(item.count)})</option>`).join("")}
+      </select>`;
+    }
+
+    function multiFilter(filter, selected) {
+      const current = new Set(selected || []);
+      return (filter.values || []).map((item) => `
+        <label class="filter-option">
+          <input type="checkbox" data-filter-id="${esc(filter.id)}" data-filter-type="multi" value="${esc(item.value)}"${current.has(item.value) ? " checked" : ""}>
+          <span>${esc(item.value)} <span class="filter-count">(${esc(item.count)})</span></span>
+        </label>
+      `).join("");
+    }
+
+    function updateFilter(input) {
+      const modeFilters = state.filters[state.mode] || {};
+      const id = input.dataset.filterId;
+      if (input.dataset.filterType === "single") {
+        modeFilters[id] = input.value ? [input.value] : [];
+      } else {
+        modeFilters[id] = [...document.querySelectorAll("[data-filter-id]:checked")]
+          .filter((item) => item.dataset.filterId === id)
+          .map((item) => item.value);
+      }
+      if (!modeFilters[id].length) delete modeFilters[id];
+      state.filters[state.mode] = modeFilters;
+      loadList();
+    }
+
+    function renderResults() {
+      const label = state.mode === "products" ? "products" : "systems";
+      $("detail").innerHTML = `
+        <div class="results-head">
+          <h2>${state.items.length} ${label}</h2>
+        </div>
+        <div class="results-grid">
+          ${state.items.map((item) => `
+            <button class="result-card" type="button" data-result-id="${esc(item.id)}">
+              ${item.thumbnail ? `<img src="${esc(item.thumbnail)}" alt="${esc(item.name)}">` : `<span class="result-placeholder">${state.mode === "products" ? "P" : "S"}</span>`}
+              <span class="result-title">${esc(item.name)}</span>
+            </button>
+          `).join("") || `<div class="muted">No results.</div>`}
+        </div>
+      `;
+      for (const button of document.querySelectorAll("[data-result-id]")) {
+        button.addEventListener("click", () => loadDetail(Number(button.dataset.resultId)));
+      }
     }
 
     function renderList() {
@@ -635,7 +810,8 @@
 
     async function loadDetail(id) {
       state.selectedId = id;
-      renderList();
+      if (state.mode === "colors") renderList();
+      else renderFilters();
       const path = state.mode === "products" ? `/api/products/${id}` : state.mode === "colors" ? `/api/colors/${id}` : `/api/systems/${id}`;
       const data = await api(path);
       $("detail").innerHTML = state.mode === "products" ? renderProduct(data) : state.mode === "colors" ? renderColor(data) : renderSystem(data);
