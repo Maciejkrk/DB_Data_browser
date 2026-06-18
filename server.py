@@ -114,10 +114,38 @@ def attr_label(attr_def: dict | None, attr_id: int) -> str:
     return str(attr_def.get("DispName") or attr_def.get("AttributeName") or attr_id)
 
 
-def product_name(product: dict, attrs: dict[int, dict]) -> str:
+def product_name_attribute_ids(attrs: dict[int, dict], models_payload: dict) -> list[int]:
+    models = models_payload.get("models") or []
+    product_model_ids = {
+        int(model["Id"])
+        for model in models
+        if str(model.get("modelType") or model.get("ModelType") or "").lower() == "product"
+    }
+    candidates = []
+    for attr_id, attr_def in attrs.items():
+        product_model_match = not product_model_ids or attr_def.get("ProductModelId") in product_model_ids
+        text = " ".join(str(attr_def.get(key) or "") for key in ("AttributeName", "DispName")).strip().lower()
+        if product_model_match and text in {"nazwa nazwa", "name name", "nazwa", "name", "product name product name", "product_name name"}:
+            candidates.append((0, int(attr_def.get("DisplayOrder") or 0), attr_id))
+        elif product_model_match and attr_def.get("searchFlag") and ("nazwa" in text or "name" in text):
+            candidates.append((1, int(attr_def.get("DisplayOrder") or 0), attr_id))
+    if not candidates:
+        for attr_id, attr_def in attrs.items():
+            text = " ".join(str(attr_def.get(key) or "") for key in ("AttributeName", "DispName")).strip().lower()
+            if text in {"nazwa nazwa", "name name", "nazwa", "name"}:
+                candidates.append((2, int(attr_def.get("DisplayOrder") or 0), attr_id))
+    result = [item[2] for item in sorted(candidates)]
+    return result or [225]
+
+
+def product_name(product: dict, attrs: dict[int, dict], name_attribute_ids: list[int] | None = None) -> str:
+    name_ids = name_attribute_ids or [225]
     for attr in latest_attrs(product):
-        if attr.get("AttributeId") == 225:
-            return str(first_value(attr, attrs.get(225)) or f"Produkt {product.get('Id')}")
+        attr_id = int(attr.get("AttributeId") or 0)
+        if attr_id in name_ids:
+            value = first_value(attr, attrs.get(attr_id))
+            if value not in (None, "", False):
+                return str(value)
     return f"Produkt {product.get('Id')}"
 
 
@@ -362,12 +390,14 @@ def rows_as_table(rows: list[dict]) -> dict:
 class PimData:
     def __init__(self, data_dir: Path) -> None:
         self.data_dir = data_dir
+        self.product_models = load_json_if_exists(data_dir / "productsModels.json", {"models": []})
         self.product_attr_defs, _ = attribute_maps(load_json_if_exists(data_dir / "productsAttributes.json", {"attributes": []}))
         self.element_attr_defs, _ = attribute_maps(load_json_if_exists(data_dir / "buildingsElementsAttributes.json", {"attributes": []}))
         self.products = load_json_if_exists(data_dir / "products.json", {"products": []}).get("products", [])
         self.elements = load_json_if_exists(data_dir / "building_elements.json", {"buildingElements": []}).get("buildingElements", [])
         self.colors = load_json(data_dir / "colors.json").get("colors", []) if (data_dir / "colors.json").exists() else []
         self.color_groups = load_json(data_dir / "colorGroups.json").get("colorGroups", []) if (data_dir / "colorGroups.json").exists() else []
+        self.product_name_attribute_ids = product_name_attribute_ids(self.product_attr_defs, self.product_models)
         self.sot_parent_ids = table_parent_ids(self.product_attr_defs, [276], ("typoszereg", "series of types", "sot"))
         self.product_index = {int(product["Id"]): product for product in self.products}
         self.element_index = {int(element["Id"]): element for element in self.elements}
@@ -423,7 +453,7 @@ class PimData:
         sot_rows = rows_for_parents(attrs, self.sot_parent_ids, self.product_attr_defs)
         result = {
             "id": product_id,
-            "name": product_name(product, self.product_attr_defs),
+            "name": product_name(product, self.product_attr_defs, self.product_name_attribute_ids),
             "unit": unit,
             "categories": categories,
             "attribute_count": len(attrs),
@@ -457,7 +487,7 @@ class PimData:
         usage: dict[str, list[dict]] = {}
         for product in self.products:
             product_id = int(product["Id"])
-            product_name_value = product_name(product, self.product_attr_defs)
+            product_name_value = product_name(product, self.product_attr_defs, self.product_name_attribute_ids)
             version = (product.get("dataVersions") or [{}])[-1]
             for item in version.get("colorsAttributes") or []:
                 element_id = item.get("ElementId")
@@ -704,7 +734,7 @@ class PimData:
                     products.append(
                         {
                             "product_id": product_id,
-                            "product_name": product_name(linked_product, self.product_attr_defs) if linked_product else product_item.get("value") if product_item else "",
+                            "product_name": product_name(linked_product, self.product_attr_defs, self.product_name_attribute_ids) if linked_product else product_item.get("value") if product_item else "",
                             "variant": product_variant,
                             "default": bool(default_item.get("value")) if default_item else False,
                         }
