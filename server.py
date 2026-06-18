@@ -3,10 +3,12 @@ from __future__ import annotations
 import argparse
 import cgi
 import json
+import mimetypes
 import re
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
+from urllib.request import Request, urlopen
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -234,6 +236,17 @@ def selected_filters(qs: dict[str, list[str]]) -> dict[str, list[str]]:
         if selected:
             filters[filter_id] = selected
     return filters
+
+
+def fetch_remote_asset(url: str) -> tuple[bytes, str]:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("Unsupported asset URL")
+    request = Request(url, headers={"User-Agent": "DB-Data-Browser/1.0"})
+    with urlopen(request, timeout=15) as response:
+        content = response.read()
+        content_type = response.headers.get("Content-Type") or mimetypes.guess_type(parsed.path)[0] or "application/octet-stream"
+    return content, content_type
 
 
 def table_parent_ids(attr_defs: dict[int, dict], fallback_ids: list[int], names: tuple[str, ...]) -> list[int]:
@@ -792,7 +805,10 @@ def make_handler(data: PimData):
             qs = parse_qs(parsed.query)
             query = qs.get("q", [""])[0]
             try:
-                if parsed.path == "/api/summary":
+                if parsed.path == "/api/asset":
+                    self.send_asset(qs.get("url", [""])[0])
+                    return
+                elif parsed.path == "/api/summary":
                     payload = data.summary()
                 elif parsed.path == "/api/products":
                     payload = data.list_products(query=query, filters=selected_filters(qs))
@@ -816,6 +832,19 @@ def make_handler(data: PimData):
                 self.send_json(payload)
             except (KeyError, ValueError):
                 self.send_json({"error": "Record not found"}, status=404)
+
+        def send_asset(self, url: str):
+            try:
+                body, content_type = fetch_remote_asset(url)
+            except Exception as error:
+                self.send_json({"error": str(error)}, status=502)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Cache-Control", "public, max-age=3600")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
 
         def send_json(self, payload: dict, status: int = 200):
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -857,7 +886,10 @@ def make_store_handler(store: DataStore):
             qs = parse_qs(parsed.query)
             query = qs.get("q", [""])[0]
             try:
-                if parsed.path == "/api/source/status":
+                if parsed.path == "/api/asset":
+                    self.send_asset(qs.get("url", [""])[0])
+                    return
+                elif parsed.path == "/api/source/status":
                     payload = store.status()
                 elif parsed.path == "/api/summary":
                     if not store.data:
@@ -887,6 +919,19 @@ def make_store_handler(store: DataStore):
                 self.send_json(payload)
             except (KeyError, ValueError):
                 self.send_json({"error": "Record not found"}, status=404)
+
+        def send_asset(self, url: str):
+            try:
+                body, content_type = fetch_remote_asset(url)
+            except Exception as error:
+                self.send_json({"error": str(error)}, status=502)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Cache-Control", "public, max-age=3600")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
 
         def ready_data(self) -> PimData:
             if not store.data:

@@ -477,8 +477,13 @@
       min-height: 360px;
       border: 1px solid var(--line);
       border-radius: 6px;
-      background: #0f172a;
+      background: #eef1f4;
       display: block;
+      cursor: grab;
+      touch-action: none;
+    }
+    .material-preview canvas:active {
+      cursor: grabbing;
     }
     .muted { color: var(--muted); }
     .warn { color: var(--danger); }
@@ -1070,8 +1075,8 @@
       bindAttribute(gl, program, "aUv", 2, stride, 6 * 4);
       const mainTexture = createTexture(gl, [220, 220, 220, 255]);
       const normalTexture = createTexture(gl, [128, 128, 255, 255]);
-      if (data.main_texture) loadTexture(gl, mainTexture, data.main_texture);
-      if (data.normal_map) loadTexture(gl, normalTexture, data.normal_map);
+      if (data.main_texture) loadTexture(gl, mainTexture, proxiedAsset(data.main_texture));
+      if (data.normal_map) loadTexture(gl, normalTexture, proxiedAsset(data.normal_map));
       gl.useProgram(program);
       gl.uniform1i(gl.getUniformLocation(program, "uMainTex"), 0);
       gl.uniform1i(gl.getUniformLocation(program, "uNormalTex"), 1);
@@ -1079,14 +1084,41 @@
       gl.uniform1i(gl.getUniformLocation(program, "uUseNormal"), data.type === "advanced" && Boolean(data.normal_map));
       const rgb = data.rgb || { r: 190, g: 190, b: 190 };
       gl.uniform3f(gl.getUniformLocation(program, "uColor"), (Number(rgb.r) || 0) / 255, (Number(rgb.g) || 0) / 255, (Number(rgb.b) || 0) / 255);
-      function frame(time) {
+      const rotation = { x: -0.48, y: -0.55 };
+      let dragging = false;
+      let lastX = 0;
+      let lastY = 0;
+      canvas.addEventListener("pointerdown", (event) => {
+        dragging = true;
+        lastX = event.clientX;
+        lastY = event.clientY;
+        canvas.setPointerCapture(event.pointerId);
+      });
+      canvas.addEventListener("pointermove", (event) => {
+        if (!dragging) return;
+        const dx = event.clientX - lastX;
+        const dy = event.clientY - lastY;
+        rotation.y += dx * 0.01;
+        rotation.x += dy * 0.01;
+        rotation.x = Math.max(-1.35, Math.min(1.35, rotation.x));
+        lastX = event.clientX;
+        lastY = event.clientY;
+      });
+      canvas.addEventListener("pointerup", (event) => {
+        dragging = false;
+        if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+      });
+      canvas.addEventListener("pointercancel", () => {
+        dragging = false;
+      });
+      function frame() {
         resizeCanvas(canvas);
         gl.viewport(0, 0, canvas.width, canvas.height);
         gl.enable(gl.DEPTH_TEST);
-        gl.clearColor(0.06, 0.09, 0.16, 1);
+        gl.clearColor(0.93, 0.95, 0.97, 1);
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
         const aspect = canvas.width / canvas.height;
-        const model = multiply(rotateY(time * 0.00045), rotateX(-0.48));
+        const model = multiply(rotateY(rotation.y), rotateX(rotation.x));
         const view = translate(0, 0, -4.2);
         const projection = perspective(Math.PI / 4, aspect, 0.1, 100);
         gl.uniformMatrix4fv(gl.getUniformLocation(program, "uModel"), false, model);
@@ -1131,8 +1163,8 @@
       const texture = gl.createTexture();
       gl.bindTexture(gl.TEXTURE_2D, texture);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(pixel));
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
       return texture;
@@ -1146,12 +1178,20 @@
           gl.bindTexture(gl.TEXTURE_2D, texture);
           gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
           gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
-          gl.generateMipmap(gl.TEXTURE_2D);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
         } catch (error) {
           console.warn("Texture could not be used by WebGL", error);
         }
       };
       image.src = url;
+    }
+
+    function proxiedAsset(url) {
+      if (!url) return "";
+      return `/api/asset?url=${encodeURIComponent(url)}`;
     }
 
     function resizeCanvas(canvas) {
