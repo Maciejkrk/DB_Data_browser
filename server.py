@@ -291,6 +291,46 @@ def table_parent_ids(attr_defs: dict[int, dict], fallback_ids: list[int], names:
     return parent_ids
 
 
+def find_attribute_ids(attr_defs: dict[int, dict], names: tuple[str, ...], types: tuple[str, ...] = (), fallback_ids: list[int] | None = None) -> list[int]:
+    fallback_ids = fallback_ids or []
+    normalized_types = {item.lower() for item in types}
+    matches = []
+    for attr_id, attr_def in attr_defs.items():
+        attr_type = str(attr_def.get("AttributeType") or "").lower()
+        if normalized_types and attr_type not in normalized_types:
+            continue
+        text = " ".join(str(attr_def.get(key) or "") for key in ("AttributeName", "DispName")).lower()
+        if any(name in text for name in names):
+            matches.append((int(attr_def.get("DisplayOrder") or 0), attr_id))
+    result = [item[1] for item in sorted(matches)]
+    for fallback_id in fallback_ids:
+        if fallback_id not in result:
+            result.append(fallback_id)
+    return result
+
+
+def first_field_value(row: dict, keys: tuple[str, ...], default: object = "") -> object:
+    values = row_map(row)
+    for key in keys:
+        item = values.get(key)
+        if item and item.get("value") not in (None, "", False):
+            return item.get("value")
+    normalized_keys = tuple(key.lower() for key in keys)
+    for item in row.get("values") or []:
+        text = " ".join(str(item.get(key) or "") for key in ("attribute_name", "label")).lower()
+        if any(key in text for key in normalized_keys) and item.get("value") not in (None, "", False):
+            return item.get("value")
+    return default
+
+
+def first_field_by_ids(row: dict, attribute_ids: list[int]) -> dict | None:
+    ids = {int(attribute_id) for attribute_id in attribute_ids}
+    for item in row.get("values") or []:
+        if int(item.get("attribute_id") or 0) in ids:
+            return item
+    return None
+
+
 def rows_for_parent(all_attrs: list[dict], parent_id: int, attr_defs: dict[int, dict]) -> list[dict]:
     grouped: dict[tuple[int, str], list[dict]] = {}
     for item in values_for_parent(all_attrs, parent_id, attr_defs):
@@ -399,6 +439,13 @@ class PimData:
         self.color_groups = load_json(data_dir / "colorGroups.json").get("colorGroups", []) if (data_dir / "colorGroups.json").exists() else []
         self.product_name_attribute_ids = product_name_attribute_ids(self.product_attr_defs, self.product_models)
         self.sot_parent_ids = table_parent_ids(self.product_attr_defs, [276], ("typoszereg", "series of types", "sot"))
+        self.element_schema = {
+            "variant_parent_ids": find_attribute_ids(self.element_attr_defs, ("variant", "wariant"), ("model_array",), [283]),
+            "layer_parent_ids": find_attribute_ids(self.element_attr_defs, ("layer", "warstw"), ("model_array",), [285]),
+            "available_parent_ids": find_attribute_ids(self.element_attr_defs, ("available products", "dostępne produkty", "produkty"), ("model_array",), [289]),
+            "product_ids": find_attribute_ids(self.element_attr_defs, ("product", "produkt"), ("product",), [290]),
+            "default_ids": find_attribute_ids(self.element_attr_defs, ("default", "domyśl"), ("boolean",), [298]),
+        }
         self.product_index = {int(product["Id"]): product for product in self.products}
         self.element_index = {int(element["Id"]): element for element in self.elements}
         self.color_index = {int(color["Id"]): color for color in self.colors}
@@ -679,9 +726,9 @@ class PimData:
         latest_version = versions[-1] if versions else {}
         attrs = latest_attrs(element)
         root_values = values_for_parent(attrs, 0, self.element_attr_defs)
-        variant_rows = rows_for_parent(attrs, 283, self.element_attr_defs)
-        layer_rows = rows_for_parent(attrs, 285, self.element_attr_defs)
-        available_rows = rows_for_parent(attrs, 289, self.element_attr_defs)
+        variant_rows = rows_for_parents(attrs, self.element_schema["variant_parent_ids"], self.element_attr_defs)
+        layer_rows = rows_for_parents(attrs, self.element_schema["layer_parent_ids"], self.element_attr_defs)
+        available_rows = rows_for_parents(attrs, self.element_schema["available_parent_ids"], self.element_attr_defs)
         result = {
             "id": element_id,
             "name": element_name(element, self.element_attr_defs),
@@ -725,8 +772,8 @@ class PimData:
                 layer_hash = str(layer.get("hash") or "")
                 products = []
                 for available in products_by_layer.get(layer_hash, []):
-                    product_item = next((item for item in available.get("values") or [] if item.get("attribute_id") == 290), None)
-                    default_item = next((item for item in available.get("values") or [] if item.get("attribute_id") == 298), None)
+                    product_item = first_field_by_ids(available, self.element_schema["product_ids"])
+                    default_item = first_field_by_ids(available, self.element_schema["default_ids"])
                     raw = product_item.get("raw") if product_item else {}
                     product_id = raw.get("IntValue") if raw else None
                     product_variant = raw.get("IntValue2") if raw else None
@@ -742,15 +789,15 @@ class PimData:
                 variant_layers.append(
                     {
                         "row": layer.get("row"),
-                        "position": field_value(layer, "layer_position"),
-                        "name": field_value(layer, "layer_name"),
+                        "position": first_field_value(layer, ("layer_position", "pozycja warstwy", "position"), ""),
+                        "name": first_field_value(layer, ("layer_name", "nazwa warstwy", "warstwa", "name"), ""),
                         "products": products,
                     }
                 )
             variants.append(
                 {
                     "row": variant.get("row"),
-                    "name": field_value(variant, "variant_name", f"Wariant {variant.get('row')}"),
+                    "name": first_field_value(variant, ("variant_name", "nazwa wariantu", "wariant", "name"), f"Wariant {variant.get('row')}"),
                     "layers": variant_layers,
                 }
             )
