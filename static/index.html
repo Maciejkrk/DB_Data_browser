@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DB Data Browser</title>
+  <style>
+    :root {
+      --bg: #f4f6f8;
+      --panel: #ffffff;
+      --line: #d7dee8;
+      --text: #172033;
+      --muted: #667085;
+      --accent: #0f766e;
+      --accent-soft: #e6fffb;
+      --ink-soft: #f8fafc;
+      --danger: #9a3412;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Arial, sans-serif;
+      font-size: 14px;
+    }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+    }
+    h1 { margin: 0; font-size: 20px; }
+    h2 { margin: 0 0 10px; font-size: 16px; }
+    main {
+      display: grid;
+      grid-template-columns: minmax(320px, 430px) 1fr;
+      gap: 14px;
+      padding: 14px;
+      min-height: calc(100vh - 58px);
+    }
+    aside, section {
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel);
+      overflow: hidden;
+    }
+    .toolbar {
+      display: grid;
+      gap: 10px;
+      padding: 12px;
+      border-bottom: 1px solid var(--line);
+      background: var(--ink-soft);
+    }
+    .tabs {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      overflow: hidden;
+      background: #fff;
+    }
+    button {
+      border: 0;
+      background: #fff;
+      color: var(--text);
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .tabs button {
+      padding: 10px;
+      border-right: 1px solid var(--line);
+    }
+    .tabs button:last-child { border-right: 0; }
+    .tabs button.active {
+      background: var(--accent);
+      color: #fff;
+    }
+    input, select {
+      width: 100%;
+      padding: 9px 10px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: #fff;
+      font: inherit;
+    }
+    .list {
+      max-height: calc(100vh - 204px);
+      overflow: auto;
+    }
+    .item {
+      width: 100%;
+      display: block;
+      padding: 12px;
+      border: 0;
+      border-bottom: 1px solid var(--line);
+      background: #fff;
+      text-align: left;
+    }
+    .item:hover, .item.active { background: var(--accent-soft); }
+    .item-title { display: block; font-weight: 800; }
+    .item-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 7px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+    .content {
+      padding: 14px;
+      max-height: calc(100vh - 88px);
+      overflow: auto;
+    }
+    .summary {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .pill {
+      display: inline-block;
+      padding: 4px 7px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #fff;
+      color: #344054;
+      font-size: 12px;
+    }
+    .detail-head {
+      display: grid;
+      gap: 8px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--line);
+      margin-bottom: 14px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(220px, 1fr));
+      gap: 10px;
+    }
+    .field, details {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      overflow: hidden;
+    }
+    .field {
+      padding: 9px 10px;
+    }
+    .field-label {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .field-value {
+      margin-top: 4px;
+      overflow-wrap: anywhere;
+      white-space: pre-wrap;
+      line-height: 1.4;
+    }
+    details { margin-top: 12px; }
+    summary {
+      padding: 11px 12px;
+      background: var(--ink-soft);
+      cursor: pointer;
+      font-weight: 800;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    th, td {
+      padding: 8px;
+      border-top: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      color: #344054;
+      background: #fff;
+      font-size: 12px;
+    }
+    td {
+      overflow-wrap: anywhere;
+      white-space: pre-wrap;
+    }
+    .muted { color: var(--muted); }
+    .warn { color: var(--danger); }
+    @media (max-width: 940px) {
+      main { grid-template-columns: 1fr; }
+      .list, .content { max-height: none; }
+      .grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>DB Data Browser</h1>
+    <div id="summary" class="summary">Ładowanie danych...</div>
+  </header>
+  <main>
+    <aside>
+      <div class="toolbar">
+        <div class="tabs">
+          <button id="productsTab" class="active" type="button">Produkty</button>
+          <button id="systemsTab" type="button">Systemy</button>
+        </div>
+        <input id="searchInput" type="search" placeholder="Szukaj po nazwie, kategorii, typie...">
+        <select id="categorySelect"></select>
+      </div>
+      <div id="list" class="list"></div>
+    </aside>
+    <section>
+      <div id="detail" class="content">
+        <div class="muted">Wybierz rekord z listy po lewej stronie.</div>
+      </div>
+    </section>
+  </main>
+  <script>
+    const state = { mode: "products", items: [], selectedId: null, categories: [] };
+    const $ = (id) => document.getElementById(id);
+    const esc = (value) => String(value ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;");
+
+    async function api(path) {
+      const response = await fetch(path);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Błąd odczytu danych");
+      return data;
+    }
+
+    function setMode(mode) {
+      state.mode = mode;
+      state.selectedId = null;
+      $("productsTab").classList.toggle("active", mode === "products");
+      $("systemsTab").classList.toggle("active", mode === "systems");
+      $("categorySelect").hidden = mode !== "products";
+      $("searchInput").value = "";
+      loadList();
+    }
+
+    async function loadSummary() {
+      const summary = await api("/api/summary");
+      $("summary").innerHTML = `
+        <span class="pill">Produkty: ${esc(summary.products)}</span>
+        <span class="pill">Systemy: ${esc(summary.systems)}</span>
+        <span class="pill">Źródło: ${esc(summary.data_dir)}</span>
+      `;
+    }
+
+    async function loadList() {
+      const query = encodeURIComponent($("searchInput").value.trim());
+      const category = encodeURIComponent($("categorySelect").value || "");
+      const url = state.mode === "products"
+        ? `/api/products?q=${query}&category=${category}`
+        : `/api/systems?q=${query}`;
+      const data = await api(url);
+      state.items = data.items || [];
+      if (state.mode === "products") {
+        state.categories = data.categories || [];
+        renderCategories();
+      }
+      renderList();
+      $("detail").innerHTML = `<div class="muted">Znaleziono ${state.items.length} rekordów. Wybierz pozycję z listy.</div>`;
+    }
+
+    function renderCategories() {
+      const current = $("categorySelect").value;
+      $("categorySelect").innerHTML = `<option value="">Wszystkie kategorie</option>` +
+        state.categories.map((item) => `<option value="${esc(item)}">${esc(item)}</option>`).join("");
+      $("categorySelect").value = current;
+    }
+
+    function renderList() {
+      $("list").innerHTML = state.items.map((item) => {
+        const meta = state.mode === "products"
+          ? [item.unit ? `jedn.: ${item.unit}` : "", ...(item.categories || []).slice(0, 3)]
+          : [item.type, item.insulation, item.bim_type];
+        return `<button class="item${item.id === state.selectedId ? " active" : ""}" type="button" data-id="${esc(item.id)}">
+          <span class="item-title">${esc(item.name)}</span>
+          <span class="item-meta">${meta.filter(Boolean).map((value) => `<span>${esc(value)}</span>`).join("")}</span>
+        </button>`;
+      }).join("") || `<div class="item"><span class="muted">Brak wyników.</span></div>`;
+      for (const button of document.querySelectorAll(".item[data-id]")) {
+        button.addEventListener("click", () => loadDetail(Number(button.dataset.id)));
+      }
+    }
+
+    async function loadDetail(id) {
+      state.selectedId = id;
+      renderList();
+      const data = await api(state.mode === "products" ? `/api/products/${id}` : `/api/systems/${id}`);
+      $("detail").innerHTML = state.mode === "products" ? renderProduct(data) : renderSystem(data);
+    }
+
+    function renderProduct(data) {
+      return `
+        <div class="detail-head">
+          <h2>${esc(data.name)}</h2>
+          <div class="summary">
+            <span class="pill">ID: ${esc(data.id)}</span>
+            <span class="pill">Atrybuty: ${esc(data.attribute_count)}</span>
+            ${data.unit ? `<span class="pill">Jednostka: ${esc(data.unit)}</span>` : ""}
+            ${(data.categories || []).map((item) => `<span class="pill">${esc(item)}</span>`).join("")}
+          </div>
+        </div>
+        ${fieldGrid(data.general)}
+        ${section("Cechy własne", data.custom_attributes)}
+        ${section("Informacje produktowe", data.product_information)}
+        ${section("Opakowania", data.packages)}
+        ${section("Palety", data.palettes)}
+        ${section("Warianty", data.variants)}
+        ${section("Dokumenty", data.documents)}
+        ${section("Typoszereg / SOT", data.sot)}
+      `;
+    }
+
+    function renderSystem(data) {
+      return `
+        <div class="detail-head">
+          <h2>${esc(data.name)}</h2>
+          <div class="summary">
+            <span class="pill">ID: ${esc(data.id)}</span>
+            <span class="pill">Atrybuty: ${esc(data.attribute_count)}</span>
+            ${data.type ? `<span class="pill">${esc(data.type)}</span>` : ""}
+            ${data.insulation ? `<span class="pill">${esc(data.insulation)}</span>` : ""}
+            ${data.bim_type ? `<span class="pill">BIM: ${esc(data.bim_type)}</span>` : ""}
+          </div>
+        </div>
+        ${fieldGrid(data.general)}
+        ${section("Warianty systemu", data.variants)}
+        ${section("Warstwy", data.layers)}
+        ${section("Produkty dostępne w warstwach", data.available_products)}
+        ${filesSection(data.files || [])}
+      `;
+    }
+
+    function fieldGrid(items) {
+      return `<div class="grid">${(items || []).map((item) => `
+        <div class="field">
+          <div class="field-label">${esc(item.label)}</div>
+          <div class="field-value">${esc(item.value)}</div>
+        </div>
+      `).join("")}</div>`;
+    }
+
+    function section(title, rows) {
+      if (!rows || !rows.length) return "";
+      return `<details open>
+        <summary>${esc(title)} (${rows.length})</summary>
+        <table>
+          <thead><tr><th>Wiersz</th><th>Pola</th></tr></thead>
+          <tbody>${rows.map((row) => `
+            <tr>
+              <td>${esc(row.row)}</td>
+              <td>${row.values.map((item) => `<strong>${esc(item.label)}:</strong> ${esc(item.value)}`).join("<br>")}</td>
+            </tr>
+          `).join("")}</tbody>
+        </table>
+      </details>`;
+    }
+
+    function filesSection(files) {
+      if (!files.length) return "";
+      return `<details open>
+        <summary>Pliki (${files.length})</summary>
+        <table>
+          <thead><tr><th>Nazwa</th><th>Adres</th></tr></thead>
+          <tbody>${files.map((file) => `
+            <tr>
+              <td>${esc(file.uploadedfileName || file.fileName || file.AttributeId)}</td>
+              <td><a href="${esc(file.fileUrl)}" target="_blank" rel="noreferrer">${esc(file.fileUrl)}</a></td>
+            </tr>
+          `).join("")}</tbody>
+        </table>
+      </details>`;
+    }
+
+    $("productsTab").addEventListener("click", () => setMode("products"));
+    $("systemsTab").addEventListener("click", () => setMode("systems"));
+    $("searchInput").addEventListener("input", () => loadList());
+    $("categorySelect").addEventListener("change", () => loadList());
+
+    loadSummary()
+      .then(loadList)
+      .catch((error) => {
+        $("summary").innerHTML = `<span class="warn">${esc(error.message)}</span>`;
+        $("detail").innerHTML = `<div class="warn">${esc(error.message)}</div>`;
+      });
+  </script>
+</body>
+</html>
