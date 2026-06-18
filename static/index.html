@@ -455,6 +455,31 @@
       color: #fff;
     }
     .modal-body { padding: 14px; }
+    .preview-actions {
+      display: flex;
+      gap: 8px;
+      margin: 10px 0 12px;
+    }
+    .preview-actions button {
+      width: auto;
+      padding: 9px 11px;
+      border-radius: 4px;
+      background: var(--accent);
+      color: #fff;
+    }
+    .material-preview {
+      display: grid;
+      gap: 10px;
+    }
+    .material-preview canvas {
+      width: 100%;
+      aspect-ratio: 16 / 10;
+      min-height: 360px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #0f172a;
+      display: block;
+    }
     .muted { color: var(--muted); }
     .warn { color: var(--danger); }
     .import-panel {
@@ -873,10 +898,19 @@
           </div>
         </div>
         ${colorPreview(data)}
+        ${materialPreviewButton(data)}
         ${colorParameterTable(data)}
         ${data.type === "advanced" ? textureChannels(data.media) : ""}
         ${colorRelations(data)}
       `;
+    }
+
+    function materialPreviewButton(data) {
+      if (data.type === "advanced" && !data.main_texture) return "";
+      if (data.type !== "advanced" && !data.rgb) return "";
+      return `<div class="preview-actions">
+        <button type="button" data-preview-3d="${esc(data.id)}">3D preview</button>
+      </div>`;
     }
 
     function colorParameterTable(data) {
@@ -946,7 +980,8 @@
     }
 
     function colorTilePreview(item) {
-      if (item.thumbnail) return `<img src="${esc(item.thumbnail)}" alt="${esc(item.name)}">`;
+      const texture = item.type === "advanced" ? item.main_texture || item.thumbnail : item.thumbnail;
+      if (texture) return `<img src="${esc(texture)}" alt="${esc(item.name)}">`;
       if (item.rgb) {
         const color = `rgb(${Number(item.rgb.r) || 0}, ${Number(item.rgb.g) || 0}, ${Number(item.rgb.b) || 0})`;
         return `<span class="swatch" style="background:${esc(color)}"></span>`;
@@ -959,6 +994,24 @@
       $("modalTitle").textContent = data.name;
       $("modalBody").innerHTML = renderColor(data);
       $("modalBackdrop").hidden = false;
+      attachPreviewEvents(data);
+    }
+
+    function attachPreviewEvents(data) {
+      for (const button of document.querySelectorAll("[data-preview-3d]")) {
+        button.addEventListener("click", () => openMaterialPreview(data));
+      }
+    }
+
+    function openMaterialPreview(data) {
+      $("modalTitle").textContent = `${data.name} - 3D preview`;
+      $("modalBody").innerHTML = `
+        <div class="material-preview">
+          <canvas id="materialPreviewCanvas" width="960" height="600"></canvas>
+          <div class="muted">${data.type === "advanced" ? "Main texture with Normal Map when available." : "Color preview from RGB values."}</div>
+        </div>
+      `;
+      renderMaterialCube($("materialPreviewCanvas"), data);
     }
 
     function closeModal() {
@@ -966,20 +1019,211 @@
       $("modalBody").innerHTML = "";
     }
 
+    function renderMaterialCube(canvas, data) {
+      const gl = canvas.getContext("webgl");
+      if (!gl) {
+        canvas.replaceWith(Object.assign(document.createElement("div"), { className: "warn", textContent: "WebGL is not available in this browser." }));
+        return;
+      }
+      const vs = `
+        attribute vec3 aPosition;
+        attribute vec3 aNormal;
+        attribute vec2 aUv;
+        uniform mat4 uMvp;
+        uniform mat4 uModel;
+        varying vec3 vNormal;
+        varying vec2 vUv;
+        void main() {
+          vNormal = mat3(uModel) * aNormal;
+          vUv = aUv;
+          gl_Position = uMvp * vec4(aPosition, 1.0);
+        }`;
+      const fs = `
+        precision mediump float;
+        varying vec3 vNormal;
+        varying vec2 vUv;
+        uniform vec3 uColor;
+        uniform sampler2D uMainTex;
+        uniform sampler2D uNormalTex;
+        uniform bool uUseTexture;
+        uniform bool uUseNormal;
+        void main() {
+          vec3 normal = normalize(vNormal);
+          if (uUseNormal) {
+            vec3 mapNormal = texture2D(uNormalTex, vUv).rgb * 2.0 - 1.0;
+            normal = normalize(normal + mapNormal * 0.45);
+          }
+          vec3 light = normalize(vec3(0.45, 0.65, 0.7));
+          float diffuse = max(dot(normal, light), 0.0);
+          vec3 base = uUseTexture ? texture2D(uMainTex, vUv).rgb : uColor;
+          vec3 color = base * (0.34 + diffuse * 0.86);
+          gl_FragColor = vec4(color, 1.0);
+        }`;
+      const program = createProgram(gl, vs, fs);
+      const geometry = cubeGeometry();
+      const buffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(geometry), gl.STATIC_DRAW);
+      const stride = 8 * 4;
+      bindAttribute(gl, program, "aPosition", 3, stride, 0);
+      bindAttribute(gl, program, "aNormal", 3, stride, 3 * 4);
+      bindAttribute(gl, program, "aUv", 2, stride, 6 * 4);
+      const mainTexture = createTexture(gl, [220, 220, 220, 255]);
+      const normalTexture = createTexture(gl, [128, 128, 255, 255]);
+      if (data.main_texture) loadTexture(gl, mainTexture, data.main_texture);
+      if (data.normal_map) loadTexture(gl, normalTexture, data.normal_map);
+      gl.useProgram(program);
+      gl.uniform1i(gl.getUniformLocation(program, "uMainTex"), 0);
+      gl.uniform1i(gl.getUniformLocation(program, "uNormalTex"), 1);
+      gl.uniform1i(gl.getUniformLocation(program, "uUseTexture"), data.type === "advanced" && Boolean(data.main_texture));
+      gl.uniform1i(gl.getUniformLocation(program, "uUseNormal"), data.type === "advanced" && Boolean(data.normal_map));
+      const rgb = data.rgb || { r: 190, g: 190, b: 190 };
+      gl.uniform3f(gl.getUniformLocation(program, "uColor"), (Number(rgb.r) || 0) / 255, (Number(rgb.g) || 0) / 255, (Number(rgb.b) || 0) / 255);
+      function frame(time) {
+        resizeCanvas(canvas);
+        gl.viewport(0, 0, canvas.width, canvas.height);
+        gl.enable(gl.DEPTH_TEST);
+        gl.clearColor(0.06, 0.09, 0.16, 1);
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+        const aspect = canvas.width / canvas.height;
+        const model = multiply(rotateY(time * 0.00045), rotateX(-0.48));
+        const view = translate(0, 0, -4.2);
+        const projection = perspective(Math.PI / 4, aspect, 0.1, 100);
+        gl.uniformMatrix4fv(gl.getUniformLocation(program, "uModel"), false, model);
+        gl.uniformMatrix4fv(gl.getUniformLocation(program, "uMvp"), false, multiply(projection, multiply(view, model)));
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, mainTexture);
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, normalTexture);
+        gl.drawArrays(gl.TRIANGLES, 0, 36);
+        if (!canvas.isConnected) return;
+        requestAnimationFrame(frame);
+      }
+      requestAnimationFrame(frame);
+    }
+
+    function createProgram(gl, vsSource, fsSource) {
+      const vertex = compileShader(gl, gl.VERTEX_SHADER, vsSource);
+      const fragment = compileShader(gl, gl.FRAGMENT_SHADER, fsSource);
+      const program = gl.createProgram();
+      gl.attachShader(program, vertex);
+      gl.attachShader(program, fragment);
+      gl.linkProgram(program);
+      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program));
+      return program;
+    }
+
+    function compileShader(gl, type, source) {
+      const shader = gl.createShader(type);
+      gl.shaderSource(shader, source);
+      gl.compileShader(shader);
+      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(shader));
+      return shader;
+    }
+
+    function bindAttribute(gl, program, name, size, stride, offset) {
+      const location = gl.getAttribLocation(program, name);
+      gl.enableVertexAttribArray(location);
+      gl.vertexAttribPointer(location, size, gl.FLOAT, false, stride, offset);
+    }
+
+    function createTexture(gl, pixel) {
+      const texture = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(pixel));
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      return texture;
+    }
+
+    function loadTexture(gl, texture, url) {
+      const image = new Image();
+      image.crossOrigin = "anonymous";
+      image.onload = () => {
+        try {
+          gl.bindTexture(gl.TEXTURE_2D, texture);
+          gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
+          gl.generateMipmap(gl.TEXTURE_2D);
+        } catch (error) {
+          console.warn("Texture could not be used by WebGL", error);
+        }
+      };
+      image.src = url;
+    }
+
+    function resizeCanvas(canvas) {
+      const width = Math.floor(canvas.clientWidth * window.devicePixelRatio);
+      const height = Math.floor(canvas.clientHeight * window.devicePixelRatio);
+      if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
+      }
+    }
+
+    function cubeGeometry() {
+      const faces = [
+        [[0, 0, 1], [[-1,-1,1],[1,-1,1],[1,1,1],[-1,1,1]]],
+        [[0, 0,-1], [[1,-1,-1],[-1,-1,-1],[-1,1,-1],[1,1,-1]]],
+        [[1, 0, 0], [[1,-1,1],[1,-1,-1],[1,1,-1],[1,1,1]]],
+        [[-1,0, 0], [[-1,-1,-1],[-1,-1,1],[-1,1,1],[-1,1,-1]]],
+        [[0, 1, 0], [[-1,1,1],[1,1,1],[1,1,-1],[-1,1,-1]]],
+        [[0,-1, 0], [[-1,-1,-1],[1,-1,-1],[1,-1,1],[-1,-1,1]]],
+      ];
+      const uv = [[0,0],[1,0],[1,1],[0,1]];
+      const order = [0, 1, 2, 0, 2, 3];
+      return faces.flatMap(([normal, corners]) => order.flatMap((index) => [...corners[index], ...normal, ...uv[index]]));
+    }
+
+    function perspective(fov, aspect, near, far) {
+      const f = 1 / Math.tan(fov / 2);
+      const nf = 1 / (near - far);
+      return [f / aspect,0,0,0, 0,f,0,0, 0,0,(far + near) * nf,-1, 0,0,(2 * far * near) * nf,0];
+    }
+
+    function translate(x, y, z) {
+      return [1,0,0,0, 0,1,0,0, 0,0,1,0, x,y,z,1];
+    }
+
+    function rotateX(angle) {
+      const c = Math.cos(angle), s = Math.sin(angle);
+      return [1,0,0,0, 0,c,s,0, 0,-s,c,0, 0,0,0,1];
+    }
+
+    function rotateY(angle) {
+      const c = Math.cos(angle), s = Math.sin(angle);
+      return [c,0,-s,0, 0,1,0,0, s,0,c,0, 0,0,0,1];
+    }
+
+    function multiply(a, b) {
+      const out = new Array(16).fill(0);
+      for (let col = 0; col < 4; col++) {
+        for (let row = 0; row < 4; row++) {
+          for (let i = 0; i < 4; i++) out[col * 4 + row] += a[i * 4 + row] * b[col * 4 + i];
+        }
+      }
+      return out;
+    }
+
     function textureChannels(items) {
       if (!items || !items.length) return "";
+      const order = ["MainTexture", "normal_map", "displacement_map", "opacity_map", "roughness_map"];
       const label = {
-        Thumbnail: "Thumbnail",
         MainTexture: "Main texture",
-        base_color_map: "Base Color Map",
         normal_map: "Normal Map",
         displacement_map: "Displacement Map",
         opacity_map: "Opacity Map",
         roughness_map: "Roughness Map",
       };
+      const ordered = order
+        .map((parameter) => items.find((item) => item.parameter === parameter))
+        .filter(Boolean);
+      if (!ordered.length) return "";
       return `<details open>
-        <summary>Texture channels (${items.length})</summary>
-        <div class="media-grid">${items.map((item) => `
+        <summary>Material maps (${ordered.length})</summary>
+        <div class="media-grid">${ordered.map((item) => `
           <div class="media-card">
             ${item.kind === "image" ? `<img src="${esc(item.url)}" alt="${esc(label[item.parameter] || item.parameter || item.name)}">` : ""}
             <a href="${esc(item.url)}" target="_blank" rel="noreferrer">${esc(label[item.parameter] || item.parameter || item.name)}</a>
@@ -1042,8 +1286,10 @@
     }
 
     function colorPreview(data) {
-      if (data.thumbnail) {
-        return `<div class="media-grid"><div class="media-card"><img src="${esc(data.thumbnail)}" alt="${esc(data.name)}"><a href="${esc(data.thumbnail)}" target="_blank" rel="noreferrer">${esc(data.name)}</a></div></div>`;
+      const texture = data.type === "advanced" ? data.main_texture || data.thumbnail : data.thumbnail;
+      if (texture) {
+        const label = data.type === "advanced" ? "Main texture" : data.name;
+        return `<div class="media-grid"><div class="media-card"><img src="${esc(texture)}" alt="${esc(label)}"><a href="${esc(texture)}" target="_blank" rel="noreferrer">${esc(label)}</a></div></div>`;
       }
       if (!data.rgb) return "";
       const color = `rgb(${Number(data.rgb.r) || 0}, ${Number(data.rgb.g) || 0}, ${Number(data.rgb.b) || 0})`;

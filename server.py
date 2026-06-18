@@ -561,15 +561,28 @@ class PimData:
         media = parameter_media(version)
         thumbnail = next((item["url"] for item in media if item.get("parameter") == "Thumbnail"), "")
         main_texture = next((item["url"] for item in media if item.get("parameter") == "MainTexture"), "")
+        material_order = ["MainTexture", "normal_map", "displacement_map", "opacity_map", "roughness_map"]
+        material_maps = []
+        for parameter in material_order:
+            item = next((entry for entry in media if entry.get("parameter") == parameter), None)
+            if item:
+                material_maps.append(item)
         rgb = None
         if all(key in params for key in ("r", "g", "b")):
             rgb = {"r": params["r"], "g": params["g"], "b": params["b"]}
+        color_type = str(params.get("type") or "")
         result = {
             "id": color_id,
             "name": str(params.get("name") or f"Kolor {color_id}"),
-            "type": str(params.get("type") or ""),
+            "type": color_type,
             "rgb": rgb,
-            "thumbnail": thumbnail or main_texture,
+            "thumbnail": main_texture if color_type == "advanced" else thumbnail,
+            "main_texture": main_texture,
+            "normal_map": next((item["url"] for item in material_maps if item.get("parameter") == "normal_map"), ""),
+            "displacement_map": next((item["url"] for item in material_maps if item.get("parameter") == "displacement_map"), ""),
+            "opacity_map": next((item["url"] for item in material_maps if item.get("parameter") == "opacity_map"), ""),
+            "roughness_map": next((item["url"] for item in material_maps if item.get("parameter") == "roughness_map"), ""),
+            "material_maps": material_maps,
             "media": media,
             "used_by_products": self.product_color_usage.get(f"1:{color_id}", []),
             "groups": [
