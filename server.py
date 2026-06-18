@@ -26,9 +26,14 @@ REQUIRED_FILES = [
 CORE_FILES = [
     "productsAttributes.json",
     "products.json",
-    "buildingsElementsAttributes.json",
-    "building_elements.json",
 ]
+
+FALLBACK_ATTRIBUTE_LABELS = {
+    277: "Thickness",
+    278: "Lambda",
+    279: "Density",
+    295: "μ",
+}
 
 
 def strip_html(value: str) -> str:
@@ -40,6 +45,12 @@ def strip_html(value: str) -> str:
 
 def load_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def load_json_if_exists(path: Path, default: dict | None = None) -> dict:
+    if not path.exists():
+        return default or {}
+    return load_json(path)
 
 
 def first_value(attr: dict, attr_def: dict | None = None) -> object:
@@ -97,7 +108,7 @@ def attribute_maps(attributes_payload: dict) -> tuple[dict[int, dict], dict[int,
 
 def attr_label(attr_def: dict | None, attr_id: int) -> str:
     if not attr_def:
-        return f"Attribute {attr_id}"
+        return FALLBACK_ATTRIBUTE_LABELS.get(attr_id, f"Attribute {attr_id}")
     return str(attr_def.get("DispName") or attr_def.get("AttributeName") or attr_id)
 
 
@@ -225,14 +236,41 @@ def selected_filters(qs: dict[str, list[str]]) -> dict[str, list[str]]:
     return filters
 
 
+def table_parent_ids(attr_defs: dict[int, dict], fallback_ids: list[int], names: tuple[str, ...]) -> list[int]:
+    parent_ids = []
+    for attr_id, attr_def in attr_defs.items():
+        attr_type = str(attr_def.get("AttributeType") or "").lower()
+        text = " ".join(str(attr_def.get(key) or "") for key in ("AttributeName", "DispName")).lower()
+        is_sot = bool(attr_def.get("SOTFlag")) or any(name in text for name in names)
+        if attr_type == "table_model" and is_sot:
+            parent_ids.append(int(attr_id))
+    for fallback_id in fallback_ids:
+        if fallback_id not in parent_ids:
+            parent_ids.append(fallback_id)
+    return parent_ids
+
+
 def rows_for_parent(all_attrs: list[dict], parent_id: int, attr_defs: dict[int, dict]) -> list[dict]:
     grouped: dict[tuple[int, str], list[dict]] = {}
     for item in values_for_parent(all_attrs, parent_id, attr_defs):
-        key = (int(item["row"] or 0), str(item.get("hash") or ""))
+        key = (int(item["row"] or 0), str(item.get("parent_hash") or ""))
         grouped.setdefault(key, []).append(item)
     rows = []
     for (row_index, row_hash), items in sorted(grouped.items()):
-        rows.append({"row": row_index, "hash": row_hash, "values": items})
+        rows.append({"row": row_index, "hash": row_hash or str((items[0] or {}).get("hash") or ""), "values": items})
+    return rows
+
+
+def rows_for_parents(all_attrs: list[dict], parent_ids: list[int], attr_defs: dict[int, dict]) -> list[dict]:
+    rows = []
+    seen = set()
+    for parent_id in parent_ids:
+        for row in rows_for_parent(all_attrs, parent_id, attr_defs):
+            marker = (parent_id, row.get("row"), row.get("hash"))
+            if marker in seen:
+                continue
+            seen.add(marker)
+            rows.append(row)
     return rows
 
 
@@ -311,12 +349,13 @@ def rows_as_table(rows: list[dict]) -> dict:
 class PimData:
     def __init__(self, data_dir: Path) -> None:
         self.data_dir = data_dir
-        self.product_attr_defs, _ = attribute_maps(load_json(data_dir / "productsAttributes.json"))
-        self.element_attr_defs, _ = attribute_maps(load_json(data_dir / "buildingsElementsAttributes.json"))
-        self.products = load_json(data_dir / "products.json").get("products", [])
-        self.elements = load_json(data_dir / "building_elements.json").get("buildingElements", [])
+        self.product_attr_defs, _ = attribute_maps(load_json_if_exists(data_dir / "productsAttributes.json", {"attributes": []}))
+        self.element_attr_defs, _ = attribute_maps(load_json_if_exists(data_dir / "buildingsElementsAttributes.json", {"attributes": []}))
+        self.products = load_json_if_exists(data_dir / "products.json", {"products": []}).get("products", [])
+        self.elements = load_json_if_exists(data_dir / "building_elements.json", {"buildingElements": []}).get("buildingElements", [])
         self.colors = load_json(data_dir / "colors.json").get("colors", []) if (data_dir / "colors.json").exists() else []
         self.color_groups = load_json(data_dir / "colorGroups.json").get("colorGroups", []) if (data_dir / "colorGroups.json").exists() else []
+        self.sot_parent_ids = table_parent_ids(self.product_attr_defs, [276], ("typoszereg", "series of types", "sot"))
         self.product_index = {int(product["Id"]): product for product in self.products}
         self.element_index = {int(element["Id"]): element for element in self.elements}
         self.color_index = {int(color["Id"]): color for color in self.colors}
@@ -368,7 +407,7 @@ class PimData:
         palette_rows = rows_for_parent(attrs, 235, self.product_attr_defs)
         variant_rows = rows_for_parent(attrs, 236, self.product_attr_defs)
         document_rows = rows_for_parent(attrs, 237, self.product_attr_defs)
-        sot_rows = rows_for_parent(attrs, 276, self.product_attr_defs)
+        sot_rows = rows_for_parents(attrs, self.sot_parent_ids, self.product_attr_defs)
         result = {
             "id": product_id,
             "name": product_name(product, self.product_attr_defs),

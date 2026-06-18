@@ -873,17 +873,38 @@
           </div>
         </div>
         ${colorPreview(data)}
-        ${textureChannels(data.media)}
+        ${colorParameterTable(data)}
+        ${data.type === "advanced" ? textureChannels(data.media) : ""}
         ${colorRelations(data)}
-        <div class="data-table">
-          <table>
-            <thead><tr><th>Parameter</th><th>Value</th></tr></thead>
-            <tbody>${(data.parameters || []).map((item) => `
-              <tr><td>${esc(item.name)}</td><td>${esc(item.value)}</td></tr>
-            `).join("")}</tbody>
-          </table>
-        </div>
       `;
+    }
+
+    function colorParameterTable(data) {
+      const params = new Map((data.parameters || []).map((item) => [String(item.name), item.value]));
+      const row = (label, value) => `<tr><td>${esc(label)}</td><td>${esc(value)}</td></tr>`;
+      const rows = [];
+      if (data.type === "advanced") {
+        rows.push(row("Name", data.name));
+        rows.push(row("Type", data.type));
+        rows.push(row("Real width of loaded texture", params.get("RealWidth") ?? ""));
+        const used = new Set(["name", "type", "RealWidth"]);
+        for (const item of data.parameters || []) {
+          if (!used.has(String(item.name))) rows.push(row(item.name, item.value));
+        }
+      } else {
+        rows.push(row("Name", data.name));
+        rows.push(row("Type", data.type || "simple"));
+        rows.push(row("R", data.rgb ? data.rgb.r : params.get("r") ?? ""));
+        rows.push(row("G", data.rgb ? data.rgb.g : params.get("g") ?? ""));
+        rows.push(row("B", data.rgb ? data.rgb.b : params.get("b") ?? ""));
+        rows.push(row("HBW", params.get("hbw") ?? params.get("HBW") ?? ""));
+      }
+      return `<div class="data-table">
+        <table>
+          <thead><tr><th>Parameter</th><th>Value</th></tr></thead>
+          <tbody>${rows.join("")}</tbody>
+        </table>
+      </div>`;
     }
 
     function renderColorGroup(data) {
