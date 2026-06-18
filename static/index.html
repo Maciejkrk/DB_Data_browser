@@ -1091,6 +1091,9 @@
       const rgb = data.rgb || { r: 190, g: 190, b: 190 };
       gl.uniform3f(gl.getUniformLocation(program, "uColor"), (Number(rgb.r) || 0) / 255, (Number(rgb.g) || 0) / 255, (Number(rgb.b) || 0) / 255);
       const rotation = { x: -0.48, y: -0.55 };
+      const targetRotation = { x: -0.48, y: -0.55 };
+      let zoom = 4.2;
+      let targetZoom = 4.2;
       let dragging = false;
       let lastX = 0;
       let lastY = 0;
@@ -1098,17 +1101,19 @@
         dragging = true;
         lastX = event.clientX;
         lastY = event.clientY;
+        event.preventDefault();
         canvas.setPointerCapture(event.pointerId);
       });
       canvas.addEventListener("pointermove", (event) => {
         if (!dragging) return;
         const dx = event.clientX - lastX;
         const dy = event.clientY - lastY;
-        rotation.y += dx * 0.01;
-        rotation.x += dy * 0.01;
-        rotation.x = Math.max(-1.35, Math.min(1.35, rotation.x));
+        targetRotation.y += dx * 0.0065;
+        targetRotation.x += dy * 0.0065;
+        targetRotation.x = Math.max(-1.28, Math.min(1.28, targetRotation.x));
         lastX = event.clientX;
         lastY = event.clientY;
+        event.preventDefault();
       });
       canvas.addEventListener("pointerup", (event) => {
         dragging = false;
@@ -1117,15 +1122,22 @@
       canvas.addEventListener("pointercancel", () => {
         dragging = false;
       });
+      canvas.addEventListener("wheel", (event) => {
+        targetZoom = Math.max(3.1, Math.min(6.2, targetZoom + event.deltaY * 0.003));
+        event.preventDefault();
+      }, { passive: false });
       function frame() {
         resizeCanvas(canvas);
         gl.viewport(0, 0, canvas.width, canvas.height);
         gl.enable(gl.DEPTH_TEST);
         gl.clearColor(0.93, 0.95, 0.97, 1);
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+        rotation.x += (targetRotation.x - rotation.x) * 0.16;
+        rotation.y += (targetRotation.y - rotation.y) * 0.16;
+        zoom += (targetZoom - zoom) * 0.16;
         const aspect = canvas.width / canvas.height;
         const model = multiply(rotateY(rotation.y), rotateX(rotation.x));
-        const view = translate(0, 0, -4.2);
+        const view = translate(0, 0, -zoom);
         const projection = perspective(Math.PI / 4, aspect, 0.1, 100);
         gl.uniformMatrix4fv(gl.getUniformLocation(program, "uModel"), false, model);
         gl.uniformMatrix4fv(gl.getUniformLocation(program, "uMvp"), false, multiply(projection, multiply(view, model)));
