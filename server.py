@@ -286,6 +286,39 @@ def filter_values(record: dict, attr_defs: dict[int, dict]) -> dict[str, set[str
     return values
 
 
+def selection_attributes(record: dict, attr_defs: dict[int, dict]) -> list[dict]:
+    grouped: dict[int, dict] = {}
+    for attr in latest_attrs(record):
+        if int(attr.get("ParentAttributeId") or 0) != 0:
+            continue
+        attr_id = int(attr.get("AttributeId") or 0)
+        attr_def = attr_defs.get(attr_id)
+        if attr_is_deleted(attr_def):
+            continue
+        attr_type = str((attr_def or {}).get("AttributeType") or "").lower()
+        if attr_type not in ("checkboxes", "select", "boolean", "radio"):
+            continue
+        value = first_value(attr, attr_def)
+        if value in (None, "", False):
+            continue
+        kind = "many of many" if attr_type in ("checkboxes", "boolean") else "one of many"
+        item = grouped.setdefault(
+            attr_id,
+            {
+                "attribute_id": attr_id,
+                "label": attr_label(attr_def, attr_id),
+                "attribute_name": (attr_def or {}).get("AttributeName"),
+                "selector_type": kind,
+                "attribute_type": attr_type,
+                "values": [],
+            },
+        )
+        display_value = "Yes" if value is True else str(value)
+        if display_value not in item["values"]:
+            item["values"].append(display_value)
+    return sorted(grouped.values(), key=lambda item: item["label"].lower())
+
+
 def filter_catalog(records: list[dict], attr_defs: dict[int, dict], selected: dict[str, list[str]] | None = None) -> list[dict]:
     selected = selected or {}
     record_values = [(record, filter_values(record, attr_defs)) for record in records]
@@ -1060,6 +1093,7 @@ class PimData:
         result.update(
             {
                 "general": root_values,
+                "selection_attributes": selection_attributes(product, self.product_attr_defs),
                 "custom_attributes": custom_rows,
                 "features": self.product_features(custom_rows),
                 "product_information": product_info_rows,
@@ -1299,6 +1333,7 @@ class PimData:
         result.update(
             {
                 "general": root_values,
+                "selection_attributes": selection_attributes(element, self.element_attr_defs),
                 "variants": variant_rows,
                 "layers": layer_rows,
                 "available_products": available_rows,

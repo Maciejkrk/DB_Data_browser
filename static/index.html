@@ -2307,6 +2307,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         ${mediaGrid(data.media)}
         ${productColorLinks(data.color_links)}
         ${featureTable(data.features, "product", data)}
+        ${selectionAttributesTable(data.selection_attributes, "product", data)}
         ${tableBlock("Product range / SOT", data.sot_table, "product", data)}
         ${fieldGrid(data.general, "product", data, "general")}
         ${infoRows("Product information", data.product_information, "product", data)}
@@ -2333,6 +2334,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         </div>
         ${correctionPanel("system", data)}
         ${mediaGrid(data.media)}
+        ${selectionAttributesTable(data.selection_attributes, "system", data)}
         ${fieldGrid(data.general, "system", data, "general")}
         ${systemVariants(data.system_variants, data)}
         ${filesSection(data.files || [], "system", data)}
@@ -2946,6 +2948,25 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
           `).join("")}</tbody>
         </table>
       </div>`;
+    }
+
+    function selectionAttributesTable(items, recordType = "", data = null) {
+      if (!items || !items.length) return "";
+      return `<details open>
+        <summary>Selection attributes (${items.length})</summary>
+        <div class="data-table">
+          <table>
+            <thead><tr><th>Selection</th><th>Type</th><th>Selected values</th></tr></thead>
+            <tbody>${items.map((item) => `
+              <tr>
+                <td><strong>${esc(item.label)}</strong> ${fieldNoteButton(recordType, data, `selector:${item.attribute_id}`, item.label)}</td>
+                <td>${esc(item.selector_type || item.attribute_type || "")}</td>
+                <td>${esc((item.values || []).join(", "))}</td>
+              </tr>
+            `).join("")}</tbody>
+          </table>
+        </div>
+      </details>`;
     }
 
     function tableBlock(title, table, recordType = "", data = null) {
