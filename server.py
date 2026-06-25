@@ -572,6 +572,44 @@ def compact_text(value: object, limit: int = 400) -> str:
     return text[:limit]
 
 
+def number_or_none(value: object) -> float | None:
+    try:
+        return float(str(value).replace(",", "."))
+    except (TypeError, ValueError):
+        return None
+
+
+def rgb_analysis(rgb: dict | None) -> str:
+    if not rgb:
+        return ""
+    r = number_or_none(rgb.get("r"))
+    g = number_or_none(rgb.get("g"))
+    b = number_or_none(rgb.get("b"))
+    if r is None or g is None or b is None:
+        return ""
+    r = max(0, min(255, r))
+    g = max(0, min(255, g))
+    b = max(0, min(255, b))
+    brightness = (0.299 * r + 0.587 * g + 0.114 * b) / 255
+    max_value = max(r, g, b)
+    min_value = min(r, g, b)
+    chroma = max_value - min_value
+    if chroma < 18:
+        hue = "neutral gray szary szare"
+    elif max_value == r:
+        hue_value = (60 * ((g - b) / chroma) + 360) % 360
+        hue = "red czerwony czerwone" if hue_value < 25 or hue_value >= 340 else "orange pomaranczowy pomaranczowe" if hue_value < 55 else "yellow zolty zolte"
+    elif max_value == g:
+        hue_value = 60 * ((b - r) / chroma) + 120
+        hue = "green zielony zielone" if hue_value < 170 else "cyan turkusowy turkusowe"
+    else:
+        hue_value = 60 * ((r - g) / chroma) + 240
+        hue = "blue niebieski niebieskie" if hue_value < 265 else "purple violet fioletowy fioletowe"
+    tone = "dark ciemny ciemne" if brightness < 0.35 else "light jasny jasne" if brightness > 0.72 else "medium sredni srednie"
+    saturation = "low saturation stonowany" if chroma < 45 else "high saturation nasycony" if chroma > 120 else "medium saturation"
+    return f"color analysis: {tone}, {hue}, {saturation}, brightness {round(brightness, 2)}"
+
+
 def visual_attribute_ai_text(detail: dict) -> str:
     parameters = [f"{item.get('name')}: {item.get('value')}" for item in detail.get("parameters") or []]
     maps = [
@@ -586,6 +624,7 @@ def visual_attribute_ai_text(detail: dict) -> str:
         f"type: {detail.get('type') or 'simple'}",
         "texture tekstura material map maps normal opacity roughness displacement" if is_advanced else "color kolor rgb",
         f"RGB: {rgb.get('r')}, {rgb.get('g')}, {rgb.get('b')}" if rgb else "",
+        rgb_analysis(rgb),
         f"groups: {', '.join(groups)}" if groups else "",
         f"used by products: {len(detail.get('used_by_products') or [])}",
         f"maps: {', '.join(maps)}" if maps else "",
@@ -653,6 +692,80 @@ def extract_ai_answer(payload: object) -> str:
         if answer:
             return answer
     return ""
+
+
+def ai_record_target(item_type: str) -> dict:
+    if item_type == "product":
+        return {"mode": "products", "kind": "detail"}
+    if item_type == "building_element":
+        return {"mode": "systems", "kind": "detail"}
+    if item_type == "visual_attribute_group":
+        return {"mode": "colors", "kind": "color_group"}
+    if item_type == "visual_attribute":
+        return {"mode": "colors", "kind": "detail"}
+    return {"mode": "", "kind": "detail"}
+
+
+def related_ai_records(question: str, answer: str, catalog: list[dict], limit: int = 12) -> list[dict]:
+    haystack = f"{question} {answer}".lower().replace("_", " ")
+    tokens = [
+        token for token in re.findall(r"[\w.-]+", question.lower().replace("_", " "))
+        if len(token) > 2
+    ]
+    scored = []
+    seen = set()
+    for index, item in enumerate(catalog):
+        item_type = str(item.get("type") or "")
+        item_id = item.get("id")
+        name = str(item.get("name") or "")
+        text = str(item.get("text") or "")
+        key = (item_type, str(item_id))
+        if not item_type or item_id in (None, "") or key in seen:
+            continue
+        searchable = f"{item_type} {item_id} {name} {text}".lower().replace("_", " ")
+        score = 0
+        if name and name.lower() in haystack:
+            score += 8
+        if str(item_id).lower() in haystack:
+            score += 6
+        score += sum(1 for token in tokens if token in searchable)
+        if score <= 0 and index < 5:
+            score = 1
+        if score <= 0:
+            continue
+        target = ai_record_target(item_type)
+        scored.append(
+            (
+                -score,
+                index,
+                {
+                    "type": item_type,
+                    "id": item_id,
+                    "name": name,
+                    "mode": target["mode"],
+                    "kind": target["kind"],
+                },
+            )
+        )
+        seen.add(key)
+    scored.sort(key=lambda entry: (entry[0], entry[1]))
+    return [entry[2] for entry in scored[:limit]]
+
+
+def ai_query_tokens(query: str) -> list[str]:
+    stop_words = {"kolor", "kolory", "cecha", "cechy", "visual", "attributes", "attribute", "znajdz", "pokaż", "pokaz"}
+    return [
+        token for token in re.findall(r"[\w.-]+", query.lower().replace("_", " "))
+        if len(token) > 2 and token not in stop_words
+    ]
+
+
+def matches_ai_query(text: str, query: str) -> bool:
+    normalized = text.lower().replace("_", " ")
+    tokens = ai_query_tokens(query)
+    if not tokens:
+        return False
+    return any(token in normalized for token in tokens)
 
 
 class PimData:
@@ -756,7 +869,6 @@ class PimData:
     def ai_catalog(self, mode: str = "", limit: int = 80, query: str = "") -> list[dict]:
         mode = mode.lower().strip()
         query = query.lower().strip()
-        normalized_query = query.replace("_", " ")
         items = []
         if mode in ("", "products"):
             product_candidates = self.products
@@ -810,10 +922,11 @@ class PimData:
             if query:
                 matched_groups = [
                     detail for detail in group_details
-                    if normalized_query in (
+                    if matches_ai_query(
                         f"{detail.get('name', '')} {detail.get('description', '')} "
-                        f"{' '.join(item.get('name', '') for item in detail.get('sample_colors') or [])}"
-                    ).lower().replace("_", " ")
+                        f"{' '.join(item.get('name', '') for item in detail.get('sample_colors') or [])}",
+                        query,
+                    )
                 ]
                 group_details = matched_groups
             for detail in group_details[: max(8, limit // 3)]:
@@ -836,7 +949,7 @@ class PimData:
             if query:
                 matched_colors = [
                     detail for detail in color_details
-                    if normalized_query in visual_attribute_ai_text(detail).lower().replace("_", " ")
+                    if matches_ai_query(visual_attribute_ai_text(detail), query)
                 ]
                 color_details = matched_colors or color_details
             else:
@@ -1495,12 +1608,14 @@ class AiAgent:
 
     def search(self, question: str, catalog: list[dict]) -> dict:
         status = self.status()
+        fallback_records = related_ai_records(question, "", catalog)
         if not status.get("available"):
-            return {"available": False, "answer": "AI is unavailable.", "status": status}
+            return {"available": False, "answer": "AI is unavailable.", "status": status, "related_records": fallback_records}
         prompt = (
             "Jestes agentem wyszukiwania w DB Data Browser. Odpowiadaj po polsku. "
             "Znajdz pasujace produkty, elementy budowlane lub visual attributes na podstawie pól, opisów, cech i filtrów. "
-            "Zwracaj konkretne nazwy, typ rekordu i ID. Jesli nie ma pewnosci, powiedz czego brakuje.\n\n"
+            "Zwracaj konkretne nazwy, typ rekordu i ID. Dla kolorow i tekstur analizuj RGB, jasnosc, odcien, typ simple/advanced oraz mapy materialowe. "
+            "Jesli powolujesz sie na rekord, podaj jego typ i ID. Jesli nie ma pewnosci, powiedz czego brakuje.\n\n"
             f"Pytanie użytkownika: {question}\n\n"
             f"Dane do przeszukania:\n{json.dumps(catalog, ensure_ascii=False)}"
         )
@@ -1511,15 +1626,15 @@ class AiAgent:
             with urlopen(request, timeout=45) as response:
                 payload = json.loads(response.read().decode("utf-8"))
         except TimeoutError:
-            return {"available": True, "answer": "AI did not answer in time. Try a shorter question or narrow the filters.", "timed_out": True, "status": status}
+            return {"available": True, "answer": "AI did not answer in time. Try a shorter question or narrow the filters.", "timed_out": True, "status": status, "related_records": fallback_records}
         except socket.timeout:
-            return {"available": True, "answer": "AI did not answer in time. Try a shorter question or narrow the filters.", "timed_out": True, "status": status}
+            return {"available": True, "answer": "AI did not answer in time. Try a shorter question or narrow the filters.", "timed_out": True, "status": status, "related_records": fallback_records}
         except Exception:
-            return {"available": False, "answer": "AI is temporarily unavailable. Try again later.", "status": {"available": False, "message": "AI unavailable"}}
+            return {"available": False, "answer": "AI is temporarily unavailable. Try again later.", "status": {"available": False, "message": "AI unavailable"}, "related_records": fallback_records}
         answer = extract_ai_answer(payload)
         if not answer:
             answer = "AI did not return a clear answer. Try asking more specifically."
-        return {"available": True, "answer": answer, "status": status}
+        return {"available": True, "answer": answer, "status": status, "related_records": related_ai_records(question, answer, catalog)}
 
 
 class DataStore:

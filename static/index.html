@@ -563,6 +563,15 @@
       border-radius: 4px;
       background: var(--ink-soft);
     }
+    button.relation-item {
+      width: 100%;
+      text-align: left;
+      color: var(--text);
+    }
+    button.relation-item:hover {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+    }
     .modal-backdrop {
       position: fixed;
       inset: 0;
@@ -1241,10 +1250,37 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
             <div class="field-label">Answer</div>
             <div class="field-value">${esc(answer)}</div>
           </div>
+          ${aiRelatedRecords(result.related_records || [])}
         `;
+        attachAiRecordLinks();
         $("aiStatus").textContent = result.timed_out ? "AI did not answer in time." : "AI response ready.";
       } catch (error) {
         $("aiStatus").textContent = "AI unavailable";
+      }
+    }
+
+    function aiRelatedRecords(records) {
+      if (!records.length) return "";
+      return `<details open>
+        <summary>Related records (${records.length})</summary>
+        <div class="relation-list">${records.map((record) => `
+          <button class="relation-item" type="button" data-ai-record="${esc(record.mode)}:${esc(record.kind)}:${esc(record.id)}">
+            <strong>${esc(record.name || record.id)}</strong>
+            <div class="muted">${esc(record.type)} / ID ${esc(record.id)}</div>
+          </button>
+        `).join("")}</div>
+      </details>`;
+    }
+
+    function attachAiRecordLinks() {
+      for (const button of document.querySelectorAll("[data-ai-record]")) {
+        button.addEventListener("click", async () => {
+          const [mode, kind, id] = button.dataset.aiRecord.split(":");
+          rememberAppLocation("AI search result");
+          await setMode(mode, { keepNavigation: true, skipAppHistory: true });
+          if (kind === "color_group") await loadColorGroup(Number(id), { skipAppHistory: true });
+          else await loadDetail(Number(id), { skipAppHistory: true });
+        });
       }
     }
 
