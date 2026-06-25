@@ -305,19 +305,18 @@
     }
     .results-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
       gap: 12px;
+      align-items: start;
     }
     .result-card {
       position: relative;
       display: grid;
-      gap: 8px;
+      grid-template-rows: auto 1fr auto;
+      gap: 10px;
       width: 100%;
-      min-height: 170px;
-      padding: 0;
+      padding: 12px;
       border: 1px solid var(--line);
-      border-radius: 6px;
-      overflow: hidden;
       background: #fff;
       text-align: left;
       color: var(--text);
@@ -328,24 +327,27 @@
     }
     .result-select {
       position: absolute;
-      margin: 8px;
+      top: 8px;
+      left: 8px;
+      margin: 0;
       width: auto;
       z-index: 1;
     }
     .status-pill {
       display: inline-block;
-      margin: 0 10px 10px;
-      padding: 3px 7px;
-      border-radius: 999px;
+      margin-top: 2px;
+      padding: 0;
+      border-radius: 0;
       font-size: 12px;
       font-weight: 800;
+      line-height: 1.2;
     }
     .status-accepted {
-      background: var(--success-soft);
+      background: transparent;
       color: var(--success);
     }
     .status-not-accepted {
-      background: var(--danger-soft);
+      background: transparent;
       color: #991b1b;
     }
     .results-actions {
@@ -368,8 +370,8 @@
     .result-card img,
     .result-card .result-placeholder {
       width: 100%;
-      aspect-ratio: 4 / 3;
-      object-fit: cover;
+      max-height: 170px;
+      object-fit: contain;
       display: block;
       background: var(--ink-soft);
     }
@@ -380,9 +382,9 @@
       font-size: 28px;
     }
     .result-title {
-      padding: 0 10px 10px;
       font-weight: 800;
       line-height: 1.35;
+      overflow-wrap: anywhere;
     }
     .summary {
       display: flex;
