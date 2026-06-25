@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>DB Data Browser</title>
+  <title>BuildData-AI Data Validator</title>
   <style>
     :root {
       --bg: #f4f6f8;
@@ -446,6 +446,16 @@
       border-color: var(--accent);
       background: var(--accent-soft);
     }
+    .table-cell-note {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 8px;
+      min-width: 140px;
+    }
+    .table-cell-note .field-note-button {
+      flex: 0 0 auto;
+    }
     .field-value {
       margin-top: 4px;
       overflow-wrap: anywhere;
@@ -727,7 +737,7 @@
 <body>
   <header>
     <div class="header-main">
-      <h1>DB Data Browser</h1>
+      <h1>BuildData-AI Data Validator</h1>
       <div id="projectSummary" class="project-summary"></div>
     </div>
     <div id="summary" class="summary">Loading data...</div>
@@ -1734,14 +1744,14 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         ${mediaGrid(data.media)}
         ${productColorLinks(data.color_links)}
         ${featureTable(data.features, "product", data)}
-        ${tableBlock("Product range / SOT", data.sot_table)}
+        ${tableBlock("Product range / SOT", data.sot_table, "product", data)}
         ${fieldGrid(data.general, "product", data, "general")}
         ${infoRows("Product information", data.product_information, "product", data)}
-        ${tableBlock("Packages", data.package_table)}
-        ${tableBlock("Pallets", data.palette_table)}
-        ${tableBlock("Product variants", data.variant_table)}
-        ${tableBlock("Documents", data.document_table)}
-        ${section("Raw custom attributes", data.custom_attributes)}
+        ${tableBlock("Packages", data.package_table, "product", data)}
+        ${tableBlock("Pallets", data.palette_table, "product", data)}
+        ${tableBlock("Product variants", data.variant_table, "product", data)}
+        ${tableBlock("Documents", data.document_table, "product", data)}
+        ${section("Raw custom attributes", data.custom_attributes, "product", data)}
       `;
     }
 
@@ -1761,8 +1771,8 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         ${correctionPanel("system", data)}
         ${mediaGrid(data.media)}
         ${fieldGrid(data.general, "system", data, "general")}
-        ${systemVariants(data.system_variants)}
-        ${filesSection(data.files || [])}
+        ${systemVariants(data.system_variants, data)}
+        ${filesSection(data.files || [], "system", data)}
       `;
     }
 
@@ -2365,16 +2375,16 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
           <tbody>${features.map((item) => `
             <tr>
               <td><strong>${esc(item.name)}</strong> ${fieldNoteButton(recordType, data, `feature:${item.name}`, item.name)}</td>
-              <td>${esc(item.value)}</td>
-              <td>${esc(item.prefix || "")}</td>
-              <td>${esc(item.suffix || "")}</td>
+              <td>${esc(item.value)} ${fieldNoteButton(recordType, data, `feature:${item.name}:value`, `${item.name} / value`)}</td>
+              <td>${esc(item.prefix || "")} ${fieldNoteButton(recordType, data, `feature:${item.name}:prefix`, `${item.name} / prefix`)}</td>
+              <td>${esc(item.suffix || "")} ${fieldNoteButton(recordType, data, `feature:${item.name}:suffix`, `${item.name} / suffix`)}</td>
             </tr>
           `).join("")}</tbody>
         </table>
       </div>`;
     }
 
-    function tableBlock(title, table) {
+    function tableBlock(title, table, recordType = "", data = null) {
       if (!table || !table.rows || !table.rows.length) return "";
       return `<details open>
         <summary>${esc(title)} (${table.rows.length})</summary>
@@ -2389,7 +2399,12 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
             <tbody>${table.rows.map((row) => `
               <tr>
                 <td>${esc(Number.isFinite(Number(row.row)) ? Number(row.row) + 1 : row.row)}</td>
-                ${table.columns.map((column) => `<td>${esc(row.values[column.key] ?? "")}</td>`).join("")}
+                ${table.columns.map((column) => {
+                  const rowLabel = Number.isFinite(Number(row.row)) ? Number(row.row) + 1 : row.row;
+                  const label = `${title} / row ${rowLabel} / ${column.label}`;
+                  const key = `table:${title}:row:${row.row ?? ""}:column:${column.key}`;
+                  return `<td><div class="table-cell-note"><span>${esc(row.values[column.key] ?? "")}</span>${fieldNoteButton(recordType, data, key, label)}</div></td>`;
+                }).join("")}
               </tr>
             `).join("")}</tbody>
           </table>
@@ -2412,7 +2427,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       </details>`;
     }
 
-    function systemVariants(variants) {
+    function systemVariants(variants, data = null) {
       if (!variants || !variants.length) return "";
       return variants.map((variant) => `
         <div class="system-variant">
@@ -2422,9 +2437,9 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
               <thead><tr><th>Position</th><th>Layer</th><th>Product / variant</th></tr></thead>
               <tbody>${(variant.layers || []).map((layer) => `
                 <tr>
-                  <td>${esc(layer.position || layer.row)}</td>
-                  <td><strong>${esc(layer.name)}</strong></td>
-                  <td>${productSelector(layer.products || [])}</td>
+                  <td>${esc(layer.position || layer.row)} ${fieldNoteButton("system", data, `variant:${variant.name}:row:${layer.row}:position`, `${variant.name} / row ${layer.row} / position`)}</td>
+                  <td><strong>${esc(layer.name)}</strong> ${fieldNoteButton("system", data, `variant:${variant.name}:row:${layer.row}:layer`, `${variant.name} / row ${layer.row} / layer`)}</td>
+                  <td>${productSelector(layer.products || [])} ${fieldNoteButton("system", data, `variant:${variant.name}:row:${layer.row}:products`, `${variant.name} / row ${layer.row} / products`)}</td>
                 </tr>
               `).join("")}</tbody>
             </table>
@@ -2467,7 +2482,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       `).join("")}</div>`;
     }
 
-    function section(title, rows) {
+    function section(title, rows, recordType = "", data = null) {
       if (!rows || !rows.length) return "";
       return `<details open>
         <summary>${esc(title)} (${rows.length})</summary>
@@ -2476,14 +2491,14 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
           <tbody>${rows.map((row) => `
             <tr>
               <td>${esc(row.row)}</td>
-              <td>${row.values.map((item) => `<strong>${esc(item.label)}:</strong> ${esc(item.value)}`).join("<br>")}</td>
+              <td>${row.values.map((item) => `<strong>${esc(item.label)}:</strong> ${esc(item.value)} ${fieldNoteButton(recordType, data, `${title}:row:${row.row}:${item.label}`, `${title} / row ${row.row} / ${item.label}`)}`).join("<br>")}</td>
             </tr>
           `).join("")}</tbody>
         </table>
       </details>`;
     }
 
-    function filesSection(files) {
+    function filesSection(files, recordType = "", data = null) {
       if (!files.length) return "";
       return `<details open>
         <summary>Files (${files.length})</summary>
@@ -2491,8 +2506,8 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
           <thead><tr><th>Name</th><th>Address</th></tr></thead>
           <tbody>${files.map((file) => `
             <tr>
-              <td>${esc(file.uploadedfileName || file.fileName || file.AttributeId)}</td>
-              <td><a href="${esc(file.fileUrl)}" target="_blank" rel="noreferrer">${esc(file.fileUrl)}</a></td>
+              <td>${esc(file.uploadedfileName || file.fileName || file.AttributeId)} ${fieldNoteButton(recordType, data, `files:${file.AttributeId || file.fileName}:name`, `Files / ${file.uploadedfileName || file.fileName || file.AttributeId}`)}</td>
+              <td><a href="${esc(file.fileUrl)}" target="_blank" rel="noreferrer">${esc(file.fileUrl)}</a> ${fieldNoteButton(recordType, data, `files:${file.AttributeId || file.fileName}:url`, `Files / ${file.uploadedfileName || file.fileName || file.AttributeId} / URL`)}</td>
             </tr>
           `).join("")}</tbody>
         </table>

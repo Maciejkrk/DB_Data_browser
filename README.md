@@ -1,4 +1,4 @@
-# DB Data Browser
+# BuildData-AI Data Validator
 
 Lokalna przeglądarka danych PIM dla produktów i systemów budowlanych.
 

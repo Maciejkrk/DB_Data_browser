@@ -1537,7 +1537,7 @@ class ReviewProjectStore:
         payload = load_json_if_exists(self.path, {})
         created_at = int(payload.get("created_at") or time.time())
         return {
-            "name": str(payload.get("name") or "DB Data Browser review"),
+            "name": str(payload.get("name") or "BuildData-AI Data Validator review"),
             "client": str(payload.get("client") or ""),
             "reviewer": str(payload.get("reviewer") or ""),
             "status": str(payload.get("status") or "in_review"),
@@ -1557,7 +1557,7 @@ class ReviewProjectStore:
             status = "in_review"
         project = {
             **current,
-            "name": str(payload.get("name") or current["name"]).strip() or "DB Data Browser review",
+            "name": str(payload.get("name") or current["name"]).strip() or "BuildData-AI Data Validator review",
             "client": str(payload.get("client") if payload.get("client") is not None else current["client"]).strip(),
             "reviewer": str(payload.get("reviewer") if payload.get("reviewer") is not None else current["reviewer"]).strip(),
             "status": status,
@@ -1698,7 +1698,7 @@ class AiAgent:
                 answer = "AI is unavailable. Matching records are listed below."
             return {"available": False, "answer": answer, "status": status, "related_records": fallback_records}
         prompt = (
-            "Jestes agentem wyszukiwania w DB Data Browser. Odpowiadaj po polsku. "
+            "Jestes agentem wyszukiwania w BuildData-AI Data Validator. Odpowiadaj po polsku. "
             "Znajdz pasujace produkty, elementy budowlane lub visual attributes na podstawie pól, opisów, cech i filtrów. "
             "Zwracaj konkretne nazwy, typ rekordu i ID. Dla kolorow i tekstur analizuj RGB, jasnosc, odcien, typ simple/advanced oraz mapy materialowe. "
             "Jesli powolujesz sie na rekord, podaj jego typ i ID. Jesli nie ma pewnosci, powiedz czego brakuje.\n\n"
@@ -2087,7 +2087,7 @@ def main() -> None:
     data_dir = Path(args.data_dir).resolve()
     store = DataStore(data_dir)
     server = ThreadingHTTPServer((args.host, args.port), make_store_handler(store))
-    print(f"DB Data Browser: http://{args.host}:{args.port}")
+    print(f"BuildData-AI Data Validator: http://{args.host}:{args.port}")
     print(f"Data source: {data_dir}")
     server.serve_forever()
 
