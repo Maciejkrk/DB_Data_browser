@@ -50,6 +50,17 @@
       flex-wrap: wrap;
       justify-content: flex-end;
     }
+    .app-nav {
+      display: flex;
+      gap: 4px;
+    }
+    .app-nav button {
+      min-width: 44px;
+    }
+    .app-nav button:disabled {
+      cursor: not-allowed;
+      opacity: .45;
+    }
     .project-summary {
       display: flex;
       flex-wrap: wrap;
@@ -693,6 +704,10 @@
     </div>
     <div id="summary" class="summary">Loading data...</div>
     <div class="header-actions">
+      <div class="app-nav" aria-label="Application navigation">
+        <button id="appBackBtn" class="source-button" type="button" disabled>Back</button>
+        <button id="appForwardBtn" class="source-button" type="button" disabled>Forward</button>
+      </div>
       <button id="projectBtn" class="source-button" type="button">Review project</button>
       <button id="changeSourceBtn" class="source-button" type="button">Change source files</button>
     </div>
@@ -747,6 +762,10 @@
       summary: null,
       project: null,
       navStack: [],
+      appBackStack: [],
+      appForwardStack: [],
+      restoringHistory: false,
+      categoryValue: "",
     };
     const REQUIRED_FILES = [
       "productsModels.json",
@@ -796,6 +815,7 @@
     }
 
     function setMode(mode, options = {}) {
+      if (!options.skipAppHistory) rememberAppLocation();
       applyModeChrome(mode);
       state.selectedId = null;
       state.selectedRecords = new Set();
@@ -803,6 +823,10 @@
       $("searchInput").value = "";
       renderFilterOptions();
       return loadList();
+    }
+
+    function cloneFilters(filters = state.filters) {
+      return JSON.parse(JSON.stringify(filters || {}));
     }
 
     function activeDetailTitle() {
@@ -815,6 +839,95 @@
       if (mode === "colors") return "Visual Attributes";
       if (mode === "corrections") return "Corrections";
       return "Previous view";
+    }
+
+    function currentAppLocation(label = "") {
+      const selectedId = state.selectedId == null ? null : state.selectedId;
+      const kind = selectedId == null
+        ? "list"
+        : state.mode === "corrections"
+          ? "note"
+          : state.mode === "colors"
+            ? "color_group"
+            : "detail";
+      return {
+        mode: state.mode,
+        kind,
+        selectedId,
+        filters: cloneFilters(),
+        search: $("searchInput")?.value || "",
+        category: state.categoryValue || "",
+        view: state.view,
+        label: label || activeDetailTitle() || modeLabel(),
+      };
+    }
+
+    function sameAppLocation(left, right) {
+      if (!left || !right) return false;
+      return left.mode === right.mode
+        && left.kind === right.kind
+        && String(left.selectedId ?? "") === String(right.selectedId ?? "")
+        && left.search === right.search
+        && left.category === right.category
+        && left.view === right.view
+        && JSON.stringify(left.filters || {}) === JSON.stringify(right.filters || {});
+    }
+
+    function rememberAppLocation(label = "") {
+      if (state.restoringHistory) return;
+      const entry = currentAppLocation(label);
+      const last = state.appBackStack[state.appBackStack.length - 1];
+      if (!sameAppLocation(entry, last)) {
+        state.appBackStack.push(entry);
+        if (state.appBackStack.length > 80) state.appBackStack.shift();
+      }
+      state.appForwardStack = [];
+      updateAppNavigationButtons();
+    }
+
+    function updateAppNavigationButtons() {
+      if ($("appBackBtn")) $("appBackBtn").disabled = !state.appBackStack.length;
+      if ($("appForwardBtn")) $("appForwardBtn").disabled = !state.appForwardStack.length;
+    }
+
+    async function restoreAppLocation(entry) {
+      state.restoringHistory = true;
+      try {
+        applyModeChrome(entry.mode);
+        state.filters = cloneFilters(entry.filters);
+        state.view = entry.view || state.view;
+        state.selectedId = null;
+        state.selectedRecords = new Set();
+        $("searchInput").value = entry.search || "";
+        renderFilterOptions();
+        $("categorySelect").value = entry.category || "";
+        state.categoryValue = entry.category || "";
+        await loadList();
+        if (entry.kind === "note") {
+          openNote(entry.selectedId, { skipAppHistory: true });
+        } else if (entry.kind === "color_group") {
+          await loadColorGroup(Number(entry.selectedId), { skipAppHistory: true });
+        } else if (entry.kind === "detail") {
+          await loadDetail(Number(entry.selectedId), { skipAppHistory: true });
+        }
+      } finally {
+        state.restoringHistory = false;
+        updateAppNavigationButtons();
+      }
+    }
+
+    async function appHistoryBack() {
+      const previous = state.appBackStack.pop();
+      if (!previous) return;
+      state.appForwardStack.push(currentAppLocation());
+      await restoreAppLocation(previous);
+    }
+
+    async function appHistoryForward() {
+      const next = state.appForwardStack.pop();
+      if (!next) return;
+      state.appBackStack.push(currentAppLocation());
+      await restoreAppLocation(next);
     }
 
     function currentNavigationEntry(label = "") {
@@ -850,11 +963,11 @@
       state.selectedRecords = new Set();
       await loadList();
       if (previous.kind === "note") {
-        openNote(previous.selectedId);
+        openNote(previous.selectedId, { skipAppHistory: true });
       } else if (previous.kind === "color_group") {
-        await loadColorGroup(Number(previous.selectedId));
+        await loadColorGroup(Number(previous.selectedId), { skipAppHistory: true });
       } else {
-        await loadDetail(Number(previous.selectedId));
+        await loadDetail(Number(previous.selectedId), { skipAppHistory: true });
       }
     }
 
@@ -1180,6 +1293,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       const clearButton = document.querySelector("[data-clear-filters]");
       if (clearButton) {
         clearButton.addEventListener("click", () => {
+          rememberAppLocation("Filters");
           state.filters[state.mode] = {};
           state.selectedId = null;
           loadList();
@@ -1209,6 +1323,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
     }
 
     function updateFilter(input) {
+      rememberAppLocation("Filters");
       const modeFilters = state.filters[state.mode] || {};
       const id = input.dataset.filterId;
       if (input.dataset.filterType === "single") {
@@ -1394,7 +1509,8 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       if (importInput) importInput.addEventListener("change", importNotesFile);
     }
 
-    function openNote(key) {
+    function openNote(key, options = {}) {
+      if (!options.skipAppHistory) rememberAppLocation();
       state.selectedId = key;
       renderNotesList();
       const note = state.items.find((item) => item.key === key);
@@ -1422,9 +1538,9 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         button.addEventListener("click", async () => {
           const [type, id] = button.dataset.openRecord.split(":");
           pushCurrentNavigation("Corrections");
-          await setMode(type === "system" ? "systems" : type === "color" || type === "color_group" ? "colors" : "products", { keepNavigation: true });
-          if (type === "color_group") await loadColorGroup(Number(id));
-          else await loadDetail(Number(id));
+          await setMode(type === "system" ? "systems" : type === "color" || type === "color_group" ? "colors" : "products", { keepNavigation: true, skipAppHistory: true });
+          if (type === "color_group") await loadColorGroup(Number(id), { skipAppHistory: true });
+          else await loadDetail(Number(id), { skipAppHistory: true });
         });
       }
       const resolvedButton = document.querySelector("[data-toggle-note-resolved]");
@@ -1490,7 +1606,8 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       }
     }
 
-    async function loadColorGroup(id) {
+    async function loadColorGroup(id, options = {}) {
+      if (!options.skipAppHistory) rememberAppLocation();
       state.selectedId = id;
       renderList();
       const data = await api(`/api/color-groups/${id}`);
@@ -1500,7 +1617,8 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       attachNavigationControls();
     }
 
-    async function loadDetail(id) {
+    async function loadDetail(id, options = {}) {
+      if (!options.skipAppHistory) rememberAppLocation();
       const requestId = ++state.requestId;
       state.selectedId = id;
       if (state.mode === "colors") renderList();
@@ -2079,12 +2197,13 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       for (const button of document.querySelectorAll("[data-color-group-id]")) {
         button.addEventListener("click", async () => {
           pushCurrentNavigation();
+          rememberAppLocation();
           applyModeChrome("colors");
           state.selectedId = Number(button.dataset.colorGroupId);
           state.selectedRecords = new Set();
           $("searchInput").value = "";
           await loadList();
-          await loadColorGroup(Number(button.dataset.colorGroupId));
+          await loadColorGroup(Number(button.dataset.colorGroupId), { skipAppHistory: true });
         });
       }
     }
@@ -2204,8 +2323,9 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       for (const button of document.querySelectorAll("[data-linked-product-id]")) {
         button.addEventListener("click", async () => {
           pushCurrentNavigation();
-          await setMode("products", { keepNavigation: true });
-          await loadDetail(Number(button.dataset.linkedProductId));
+          rememberAppLocation();
+          await setMode("products", { keepNavigation: true, skipAppHistory: true });
+          await loadDetail(Number(button.dataset.linkedProductId), { skipAppHistory: true });
         });
       }
     }
@@ -2255,6 +2375,8 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
     $("systemsTab").addEventListener("click", () => setMode("systems"));
     $("colorsTab").addEventListener("click", () => setMode("colors"));
     $("correctionsTab").addEventListener("click", () => setMode("corrections"));
+    $("appBackBtn").addEventListener("click", () => appHistoryBack());
+    $("appForwardBtn").addEventListener("click", () => appHistoryForward());
     $("projectBtn").addEventListener("click", () => openProjectModal());
     $("changeSourceBtn").addEventListener("click", () => changeSourceFiles());
     $("aiSearchBtn").addEventListener("click", () => runAiSearch());
@@ -2267,6 +2389,8 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       loadList();
     });
     $("categorySelect").addEventListener("change", () => {
+      rememberAppLocation("Visual Attributes");
+      state.categoryValue = $("categorySelect").value;
       if (state.mode === "colors" && state.selectedId) loadColorGroup(state.selectedId);
       else loadList();
     });
@@ -2278,6 +2402,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       await loadProject();
       await loadAiStatus();
       await loadList();
+      updateAppNavigationButtons();
     }
 
     startApp()
