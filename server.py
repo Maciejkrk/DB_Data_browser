@@ -85,6 +85,8 @@ def notes_as_csv(notes: list[dict]) -> str:
             "record_type",
             "record_id",
             "record_name",
+            "field_label",
+            "field_key",
             "status",
             "accepted",
             "requires_correction",
@@ -104,6 +106,8 @@ def notes_as_csv(notes: list[dict]) -> str:
                 "record_type": note.get("record_type", ""),
                 "record_id": note.get("record_id", ""),
                 "record_name": note.get("record_name", ""),
+                "field_label": note.get("field_label", ""),
+                "field_key": note.get("field_key", ""),
                 "status": "resolved" if note.get("resolved") else "open",
                 "accepted": "yes" if note.get("accepted") else "no",
                 "requires_correction": "yes" if note.get("requires_correction") else "no",
@@ -1328,8 +1332,8 @@ class NotesStore:
         notes = sorted(self.load()["notes"], key=lambda item: item.get("updated_at", 0), reverse=True)
         return {"items": notes}
 
-    def get_note(self, record_type: str, record_id: int) -> dict:
-        key = self.note_key(record_type, record_id)
+    def get_note(self, record_type: str, record_id: int, field_key: str = "") -> dict:
+        key = self.note_key(record_type, record_id, field_key)
         for note in self.load()["notes"]:
             if note.get("key") == key:
                 return note
@@ -1337,6 +1341,8 @@ class NotesStore:
             "key": key,
             "record_type": record_type,
             "record_id": record_id,
+            "field_key": field_key,
+            "field_label": "",
             "requires_correction": False,
             "resolved": False,
             "accepted": False,
@@ -1347,9 +1353,11 @@ class NotesStore:
     def save_note(self, payload: dict) -> dict:
         record_type = str(payload.get("record_type") or "")
         record_id = int(payload.get("record_id") or 0)
-        key = self.note_key(record_type, record_id)
+        field_key = str(payload.get("field_key") or "").strip()
+        field_label = str(payload.get("field_label") or "").strip()
+        key = self.note_key(record_type, record_id, field_key)
         now = int(time.time())
-        existing = self.get_note(record_type, record_id)
+        existing = self.get_note(record_type, record_id, field_key)
         attachments = list(existing.get("attachments") or [])
         attachment = payload.get("attachment")
         if isinstance(attachment, dict):
@@ -1361,6 +1369,8 @@ class NotesStore:
             "record_type": record_type,
             "record_id": record_id,
             "record_name": str(payload.get("record_name") or ""),
+            "field_key": field_key,
+            "field_label": field_label,
             "requires_correction": bool(payload.get("requires_correction")),
             "resolved": bool(payload.get("resolved")),
             "accepted": bool(payload.get("accepted")),
@@ -1444,12 +1454,15 @@ class NotesStore:
             record_id = int(item.get("record_id") or 0)
             if not record_type or not record_id:
                 continue
-            key = self.note_key(record_type, record_id)
+            field_key = str(item.get("field_key") or "").strip()
+            key = self.note_key(record_type, record_id, field_key)
             note = {
                 "key": key,
                 "record_type": record_type,
                 "record_id": record_id,
                 "record_name": str(item.get("record_name") or ""),
+                "field_key": field_key,
+                "field_label": str(item.get("field_label") or ""),
                 "requires_correction": bool(item.get("requires_correction")),
                 "resolved": bool(item.get("resolved")),
                 "accepted": bool(item.get("accepted")),
@@ -1465,7 +1478,9 @@ class NotesStore:
         return {"imported": imported, "total": len(notes_by_key)}
 
     @staticmethod
-    def note_key(record_type: str, record_id: int) -> str:
+    def note_key(record_type: str, record_id: int, field_key: str = "") -> str:
+        if field_key:
+            return f"{record_type}:{record_id}:field:{safe_filename(field_key)}"
         return f"{record_type}:{record_id}"
 
 
@@ -1568,7 +1583,7 @@ def project_progress(notes: list[dict], data: PimData | None) -> dict:
             ignored_notes += 1
             continue
         notes_count[record_type] += 1
-        if note.get("accepted"):
+        if note.get("accepted") and not note.get("field_key"):
             accepted[record_type] += 1
         if note.get("requires_correction"):
             if note.get("resolved"):
@@ -1889,7 +1904,7 @@ def make_store_handler(store: DataStore):
                     return
                 elif parsed.path.startswith("/api/notes/"):
                     _, record_type, record_id = parsed.path.rsplit("/", 2)
-                    payload = store.notes.get_note(unquote(record_type), int(unquote(record_id)))
+                    payload = store.notes.get_note(unquote(record_type), int(unquote(record_id)), qs.get("field_key", [""])[0])
                 elif parsed.path == "/api/summary":
                     if not store.data:
                         self.send_json({"error": "Data source is not ready", **store.status()}, status=409)

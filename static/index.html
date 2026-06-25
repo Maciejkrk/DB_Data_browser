@@ -423,9 +423,28 @@
       padding: 9px 10px;
     }
     .field-label {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
       color: var(--muted);
       font-size: 12px;
       font-weight: 700;
+    }
+    .field-note-button {
+      width: auto;
+      flex: 0 0 auto;
+      padding: 2px 6px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: #fff;
+      color: var(--accent);
+      font-size: 11px;
+      line-height: 1.2;
+    }
+    .field-note-button:hover {
+      border-color: var(--accent);
+      background: var(--accent-soft);
     }
     .field-value {
       margin-top: 4px;
@@ -1513,8 +1532,9 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
           <span class="item-meta">
             <span>${esc(item.record_type)}</span>
             <span>ID: ${esc(item.record_id)}</span>
+            ${item.field_label ? `<span>field: ${esc(item.field_label)}</span>` : ""}
             ${item.requires_correction ? "<span>requires correction</span>" : ""}
-            ${item.accepted ? "<span>accepted</span>" : "<span>not accepted</span>"}
+            ${item.field_label ? "" : item.accepted ? "<span>accepted</span>" : "<span>not accepted</span>"}
             ${item.resolved ? "<span>resolved</span>" : ""}
           </span>
         </button>
@@ -1545,16 +1565,17 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         </div>
         <div class="data-table">
           <table>
-            <thead><tr><th>Record</th><th>Type</th><th>Status</th><th>Needs correction</th><th>Comment</th></tr></thead>
+            <thead><tr><th>Record</th><th>Field</th><th>Type</th><th>Status</th><th>Needs correction</th><th>Comment</th></tr></thead>
             <tbody>${state.items.map((item) => `
               <tr>
                 <td><button type="button" data-open-note="${esc(item.key)}">${esc(item.record_name || item.key)}</button><br><span class="muted">ID: ${esc(item.record_id)}</span></td>
+                <td>${item.field_label ? esc(item.field_label) : `<span class="muted">General</span>`}</td>
                 <td>${esc(item.record_type)}</td>
                 <td>${item.resolved ? "Resolved" : "Open"}</td>
                 <td>${item.requires_correction ? "Yes" : "No"}</td>
                 <td>${esc(item.comment || "")}</td>
               </tr>
-            `).join("") || `<tr><td colspan="5" class="muted">No corrections saved.</td></tr>`}</tbody>
+            `).join("") || `<tr><td colspan="6" class="muted">No corrections saved.</td></tr>`}</tbody>
           </table>
         </div>
       `;
@@ -1584,7 +1605,8 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
           <div class="summary">
             <span class="pill">${esc(note.record_type)}</span>
             <span class="pill">ID: ${esc(note.record_id)}</span>
-            ${note.accepted ? `<span class="pill status-accepted">Accepted</span>` : `<span class="pill status-not-accepted">Not accepted</span>`}
+            ${note.field_label ? `<span class="pill">Field: ${esc(note.field_label)}</span>` : ""}
+            ${note.field_label ? "" : note.accepted ? `<span class="pill status-accepted">Accepted</span>` : `<span class="pill status-not-accepted">Not accepted</span>`}
             ${note.requires_correction ? `<span class="pill warn">Requires correction</span>` : ""}
             ${note.resolved ? `<span class="pill">Resolved</span>` : `<span class="pill warn">Open</span>`}
           </div>
@@ -1693,6 +1715,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       attachSystemProductLinks();
       attachCorrectionPanel(data, state.mode === "products" ? "product" : state.mode === "systems" ? "system" : "color");
       attachNavigationControls();
+      attachFieldNoteButtons();
     }
 
     function renderProduct(data) {
@@ -1710,10 +1733,10 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         ${correctionPanel("product", data)}
         ${mediaGrid(data.media)}
         ${productColorLinks(data.color_links)}
-        ${featureTable(data.features)}
+        ${featureTable(data.features, "product", data)}
         ${tableBlock("Product range / SOT", data.sot_table)}
-        ${fieldGrid(data.general)}
-        ${infoRows("Product information", data.product_information)}
+        ${fieldGrid(data.general, "product", data, "general")}
+        ${infoRows("Product information", data.product_information, "product", data)}
         ${tableBlock("Packages", data.package_table)}
         ${tableBlock("Pallets", data.palette_table)}
         ${tableBlock("Product variants", data.variant_table)}
@@ -1737,7 +1760,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         </div>
         ${correctionPanel("system", data)}
         ${mediaGrid(data.media)}
-        ${fieldGrid(data.general)}
+        ${fieldGrid(data.general, "system", data, "general")}
         ${systemVariants(data.system_variants)}
         ${filesSection(data.files || [])}
       `;
@@ -1757,7 +1780,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         ${correctionPanel("color", data)}
         ${colorPreview(data)}
         ${materialPreviewButton(data)}
-        ${colorParameterTable(data)}
+        ${colorParameterTable(data, "color", data)}
         ${data.type === "advanced" ? textureChannels(data.media) : ""}
         ${colorRelations(data)}
       `;
@@ -1771,9 +1794,12 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       </div>`;
     }
 
-    function correctionPanel(recordType, data) {
-      return `<div class="correction-panel" data-correction-panel data-record-type="${esc(recordType)}" data-record-id="${esc(data.id)}" data-record-name="${esc(data.name)}">
-        <label><input type="checkbox" data-record-accepted> Accepted</label>
+    function correctionPanel(recordType, data, field = {}) {
+      const fieldKey = field.key || "";
+      const fieldLabel = field.label || "";
+      return `<div class="correction-panel" data-correction-panel data-record-type="${esc(recordType)}" data-record-id="${esc(data.id)}" data-record-name="${esc(data.name)}" data-field-key="${esc(fieldKey)}" data-field-label="${esc(fieldLabel)}">
+        ${fieldLabel ? `<div class="field"><div class="field-label">Field</div><div class="field-value">${esc(fieldLabel)}</div></div>` : ""}
+        ${fieldLabel ? "" : `<label><input type="checkbox" data-record-accepted> Accepted</label>`}
         <label><input type="checkbox" data-correction-required> Requires correction</label>
         <label><input type="checkbox" data-correction-resolved> Corrected / resolved</label>
         <textarea data-correction-comment placeholder="Describe what should be corrected for this record..."></textarea>
@@ -1787,8 +1813,11 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
     async function attachCorrectionPanel(data, recordType, root = document) {
       const panel = root.querySelector("[data-correction-panel]");
       if (!panel) return;
-      const note = await api(`/api/notes/${recordType}/${data.id}`);
-      panel.querySelector("[data-record-accepted]").checked = Boolean(note.accepted);
+      const fieldKey = panel.dataset.fieldKey || "";
+      const fieldLabel = panel.dataset.fieldLabel || "";
+      const note = await api(`/api/notes/${recordType}/${data.id}${fieldKey ? `?field_key=${encodeURIComponent(fieldKey)}` : ""}`);
+      const acceptedInput = panel.querySelector("[data-record-accepted]");
+      if (acceptedInput) acceptedInput.checked = Boolean(note.accepted);
       panel.querySelector("[data-correction-required]").checked = Boolean(note.requires_correction);
       panel.querySelector("[data-correction-resolved]").checked = Boolean(note.resolved);
       panel.querySelector("[data-correction-comment]").value = note.comment || "";
@@ -1799,7 +1828,9 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
           record_type: recordType,
           record_id: data.id,
           record_name: data.name,
-          accepted: panel.querySelector("[data-record-accepted]").checked,
+          field_key: fieldKey,
+          field_label: fieldLabel,
+          accepted: acceptedInput ? acceptedInput.checked : false,
           requires_correction: panel.querySelector("[data-correction-required]").checked,
           resolved: panel.querySelector("[data-correction-resolved]").checked,
           comment: panel.querySelector("[data-correction-comment]").value,
@@ -1812,6 +1843,40 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         await refreshNotesIndex();
         await refreshProjectProgress();
       });
+    }
+
+    function fieldNoteButton(recordType, data, fieldKey, fieldLabel) {
+      if (!data || !fieldKey || !fieldLabel) return "";
+      return `<button class="field-note-button" type="button"
+        title="Add note for this field"
+        data-field-note
+        data-record-type="${esc(recordType)}"
+        data-record-id="${esc(data.id)}"
+        data-record-name="${esc(data.name)}"
+        data-field-key="${esc(fieldKey)}"
+        data-field-label="${esc(fieldLabel)}">Note</button>`;
+    }
+
+    function attachFieldNoteButtons(root = document) {
+      for (const button of root.querySelectorAll("[data-field-note]")) {
+        button.addEventListener("click", () => openFieldNoteModal(button.dataset));
+      }
+    }
+
+    async function openFieldNoteModal(dataset) {
+      const data = {
+        id: Number(dataset.recordId),
+        name: dataset.recordName || "",
+      };
+      const recordType = dataset.recordType || "";
+      const field = {
+        key: dataset.fieldKey || "",
+        label: dataset.fieldLabel || "",
+      };
+      $("modalTitle").textContent = `Field note - ${field.label}`;
+      $("modalBody").innerHTML = correctionPanel(recordType, data, field);
+      $("modalBackdrop").hidden = false;
+      await attachCorrectionPanel(data, recordType, $("modalBody"));
     }
 
     function renderAttachments(panel, attachments) {
@@ -1836,9 +1901,9 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       });
     }
 
-    function colorParameterTable(data) {
+    function colorParameterTable(data, recordType = "color", record = data) {
       const params = new Map((data.parameters || []).map((item) => [String(item.name), item.value]));
-      const row = (label, value) => `<tr><td>${esc(label)}</td><td>${esc(value)}</td></tr>`;
+      const row = (label, value) => `<tr><td><strong>${esc(label)}</strong> ${fieldNoteButton(recordType, record, `parameter:${label}`, label)}</td><td>${esc(value)}</td></tr>`;
       const rows = [];
       if (data.type === "advanced") {
         rows.push(row("Name", data.name));
@@ -1921,6 +1986,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       $("modalBackdrop").hidden = false;
       attachPreviewEvents(data);
       attachCorrectionPanel(data, "color", $("modalBody"));
+      attachFieldNoteButtons($("modalBody"));
     }
 
     function attachPreviewEvents(data) {
@@ -2291,14 +2357,14 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       `).join("")}</div>`;
     }
 
-    function featureTable(features) {
+    function featureTable(features, recordType = "", data = null) {
       if (!features || !features.length) return "";
       return `<div class="data-table">
         <table>
           <thead><tr><th>Feature</th><th>Value</th><th>Prefix</th><th>Suffix / unit</th></tr></thead>
           <tbody>${features.map((item) => `
             <tr>
-              <td><strong>${esc(item.name)}</strong></td>
+              <td><strong>${esc(item.name)}</strong> ${fieldNoteButton(recordType, data, `feature:${item.name}`, item.name)}</td>
               <td>${esc(item.value)}</td>
               <td>${esc(item.prefix || "")}</td>
               <td>${esc(item.suffix || "")}</td>
@@ -2331,14 +2397,14 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       </details>`;
     }
 
-    function infoRows(title, rows) {
+    function infoRows(title, rows, recordType = "", data = null) {
       if (!rows || !rows.length) return "";
       return `<details>
         <summary>${esc(title)} (${rows.length})</summary>
         <div class="grid">
           ${rows.flatMap((row) => row.values || []).filter((item) => item.value !== true).map((item) => `
             <div class="field">
-              <div class="field-label">${esc(item.label)}</div>
+              <div class="field-label"><span>${esc(item.label)}</span>${fieldNoteButton(recordType, data, `${title}:${item.label}`, item.label)}</div>
               <div class="field-value">${esc(item.value)}</div>
             </div>
           `).join("")}
@@ -2392,10 +2458,10 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       }
     }
 
-    function fieldGrid(items) {
+    function fieldGrid(items, recordType = "", data = null, scope = "field") {
       return `<div class="grid">${(items || []).map((item) => `
         <div class="field">
-          <div class="field-label">${esc(item.label)}</div>
+          <div class="field-label"><span>${esc(item.label)}</span>${fieldNoteButton(recordType, data, `${scope}:${item.label}`, item.label)}</div>
           <div class="field-value">${esc(item.value)}</div>
         </div>
       `).join("")}</div>`;
