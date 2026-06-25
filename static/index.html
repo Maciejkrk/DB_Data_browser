@@ -231,6 +231,12 @@
       overflow: hidden;
       background: #fff;
     }
+    .rgb-map-caption {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
     .rgb-map-wrap canvas {
       display: block;
       width: 100%;
@@ -362,6 +368,15 @@
       border: 1px solid var(--line);
       border-radius: 4px;
       background: #fff;
+    }
+    .results-actions button.active-model {
+      border-color: var(--accent);
+      background: var(--accent);
+      color: #fff;
+    }
+    .results-actions button.active-model:disabled {
+      opacity: 1;
+      cursor: default;
     }
     .result-card:hover {
       border-color: var(--accent);
@@ -1829,14 +1844,18 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       const selection = colorSelectionRange();
       return `<div class="rgb-search-panel">
         <strong>Color range search</strong>
+        <div class="muted">Active color model: ${esc(colorModelName())}</div>
         <div class="results-actions">
-          <button type="button" data-color-model="rgb"${state.colorSearchModel === "rgb" ? " disabled" : ""}>RGB</button>
-          <button type="button" data-color-model="hsb"${state.colorSearchModel === "hsb" ? " disabled" : ""}>HSB</button>
+          <button class="${state.colorSearchModel === "rgb" ? "active-model" : ""}" type="button" data-color-model="rgb"${state.colorSearchModel === "rgb" ? " disabled" : ""}>RGB</button>
+          <button class="${state.colorSearchModel === "hsb" ? "active-model" : ""}" type="button" data-color-model="hsb"${state.colorSearchModel === "hsb" ? " disabled" : ""}>HSB</button>
         </div>
         <div class="rgb-search-layout">
-          <div class="rgb-map-wrap">
-            <canvas id="rgbMapCanvas" width="512" height="512"></canvas>
-            ${rgbSelectionBox()}
+          <div>
+            <div class="rgb-map-wrap">
+              <canvas id="rgbMapCanvas" width="512" height="512"></canvas>
+              ${rgbSelectionBox()}
+            </div>
+            <div class="rgb-map-caption">${esc(colorMapCaption())}</div>
           </div>
           <div class="rgb-controls">
             ${state.colorSearchModel === "hsb" ? hsbControls() : rgbControls()}
@@ -1851,6 +1870,16 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
           </div>
         </div>
       </div>`;
+    }
+
+    function colorModelName() {
+      return state.colorSearchModel === "hsb" ? "HSB / Hue, Saturation, Brightness" : "RGB / Red, Green, Blue";
+    }
+
+    function colorMapCaption() {
+      return state.colorSearchModel === "hsb"
+        ? "Map axes: horizontal Hue, vertical Saturation. Brightness is set by sliders."
+        : "Map axes: horizontal Red, vertical Green. Blue is set by sliders.";
     }
 
     function rgbControls() {
