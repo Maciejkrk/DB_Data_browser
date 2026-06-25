@@ -1029,6 +1029,7 @@ class PimData:
                     products.append(
                         {
                             "product_id": product_id,
+                            "linked_product_id": int(product_id) if linked_product else None,
                             "product_name": product_name(linked_product, self.product_attr_defs, self.product_name_attribute_ids) if linked_product else product_item.get("value") if product_item else "",
                             "variant": product_variant,
                             "default": bool(default_item.get("value")) if default_item else False,
@@ -1059,6 +1060,8 @@ class NotesStore:
     def load(self) -> dict:
         payload = load_json_if_exists(self.path, {"notes": []})
         payload.setdefault("notes", [])
+        for note in payload["notes"]:
+            note.setdefault("resolved", False)
         return payload
 
     def list_notes(self) -> dict:
@@ -1075,6 +1078,7 @@ class NotesStore:
             "record_type": record_type,
             "record_id": record_id,
             "requires_correction": False,
+            "resolved": False,
             "comment": "",
         }
 
@@ -1089,16 +1093,53 @@ class NotesStore:
             "record_id": record_id,
             "record_name": str(payload.get("record_name") or ""),
             "requires_correction": bool(payload.get("requires_correction")),
+            "resolved": bool(payload.get("resolved")),
             "comment": str(payload.get("comment") or "").strip(),
             "updated_at": now,
         }
+        if note["resolved"]:
+            note["resolved_at"] = now
         data = self.load()
         notes = [item for item in data["notes"] if item.get("key") != key]
-        if note["requires_correction"] or note["comment"]:
+        if note["requires_correction"] or note["comment"] or note["resolved"]:
             notes.append(note)
         data["notes"] = notes
         write_json(self.path, data)
         return note
+
+    def import_notes(self, payload: dict) -> dict:
+        incoming = payload.get("notes") if isinstance(payload, dict) else None
+        if incoming is None and isinstance(payload, dict) and isinstance(payload.get("items"), list):
+            incoming = payload.get("items")
+        if not isinstance(incoming, list):
+            raise ValueError("Expected notes list")
+        data = self.load()
+        notes_by_key = {item.get("key"): item for item in data["notes"] if item.get("key")}
+        imported = 0
+        for item in incoming:
+            if not isinstance(item, dict):
+                continue
+            record_type = str(item.get("record_type") or "")
+            record_id = int(item.get("record_id") or 0)
+            if not record_type or not record_id:
+                continue
+            key = self.note_key(record_type, record_id)
+            note = {
+                "key": key,
+                "record_type": record_type,
+                "record_id": record_id,
+                "record_name": str(item.get("record_name") or ""),
+                "requires_correction": bool(item.get("requires_correction")),
+                "resolved": bool(item.get("resolved")),
+                "comment": str(item.get("comment") or "").strip(),
+                "updated_at": int(item.get("updated_at") or time.time()),
+            }
+            if item.get("resolved_at"):
+                note["resolved_at"] = int(item.get("resolved_at"))
+            notes_by_key[key] = note
+            imported += 1
+        write_json(self.path, {"notes": list(notes_by_key.values())})
+        return {"imported": imported, "total": len(notes_by_key)}
 
     @staticmethod
     def note_key(record_type: str, record_id: int) -> str:
@@ -1279,6 +1320,15 @@ def make_handler(data: PimData):
             self.end_headers()
             self.wfile.write(body)
 
+        def send_download(self, payload: dict, filename: str):
+            body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
     return Handler
 
 
@@ -1307,6 +1357,12 @@ def make_store_handler(store: DataStore):
             if parsed.path == "/api/notes":
                 self.send_json(store.notes.save_note(read_json_body(self)))
                 return
+            if parsed.path == "/api/notes/import":
+                try:
+                    self.send_json(store.notes.import_notes(read_json_body(self)))
+                except ValueError as error:
+                    self.send_json({"error": str(error)}, status=400)
+                return
             if parsed.path == "/api/ai/search":
                 payload = read_json_body(self)
                 question = str(payload.get("question") or "")
@@ -1331,6 +1387,9 @@ def make_store_handler(store: DataStore):
                     payload = store.ai.status()
                 elif parsed.path == "/api/notes":
                     payload = store.notes.list_notes()
+                elif parsed.path == "/api/notes/export":
+                    self.send_download(store.notes.load(), "browser_corrections.json")
+                    return
                 elif parsed.path.startswith("/api/notes/"):
                     _, record_type, record_id = parsed.path.rsplit("/", 2)
                     payload = store.notes.get_note(unquote(record_type), int(unquote(record_id)))
@@ -1410,6 +1469,15 @@ def make_store_handler(store: DataStore):
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def send_download(self, payload: dict, filename: str):
+            body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)

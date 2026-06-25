@@ -421,7 +421,13 @@
       border: 1px solid var(--line);
       border-radius: 999px;
       background: var(--ink-soft);
+      color: var(--text);
       font-size: 12px;
+      font-weight: 700;
+    }
+    button.product-chip:hover {
+      border-color: var(--accent);
+      background: var(--accent-soft);
     }
     .color-gallery {
       display: grid;
@@ -962,28 +968,47 @@
     }
 
     function renderNotesOverview() {
+      const openCount = state.items.filter((item) => !item.resolved).length;
+      const resolvedCount = state.items.length - openCount;
       $("detail").innerHTML = `
         <div class="detail-head">
           <h2>Corrections</h2>
-          <div class="summary"><span class="pill">${esc(state.items.length)} saved notes</span></div>
+          <div class="summary">
+            <span class="pill">${esc(state.items.length)} saved notes</span>
+            <span class="pill">${esc(openCount)} open</span>
+            <span class="pill">${esc(resolvedCount)} resolved</span>
+          </div>
+          <div class="preview-actions">
+            <button type="button" data-export-notes>Export notes</button>
+            <input id="notesImportInput" type="file" accept=".json" hidden>
+            <button type="button" data-import-notes>Import notes</button>
+          </div>
+          <div id="notesImportStatus" class="muted"></div>
         </div>
         <div class="data-table">
           <table>
-            <thead><tr><th>Record</th><th>Type</th><th>Needs correction</th><th>Comment</th></tr></thead>
+            <thead><tr><th>Record</th><th>Type</th><th>Status</th><th>Needs correction</th><th>Comment</th></tr></thead>
             <tbody>${state.items.map((item) => `
               <tr>
                 <td><button type="button" data-open-note="${esc(item.key)}">${esc(item.record_name || item.key)}</button><br><span class="muted">ID: ${esc(item.record_id)}</span></td>
                 <td>${esc(item.record_type)}</td>
+                <td>${item.resolved ? "Resolved" : "Open"}</td>
                 <td>${item.requires_correction ? "Yes" : "No"}</td>
                 <td>${esc(item.comment || "")}</td>
               </tr>
-            `).join("") || `<tr><td colspan="4" class="muted">No corrections saved.</td></tr>`}</tbody>
+            `).join("") || `<tr><td colspan="5" class="muted">No corrections saved.</td></tr>`}</tbody>
           </table>
         </div>
       `;
       for (const button of document.querySelectorAll("[data-open-note]")) {
         button.addEventListener("click", () => openNote(button.dataset.openNote));
       }
+      const exportButton = document.querySelector("[data-export-notes]");
+      if (exportButton) exportButton.addEventListener("click", () => { window.location.href = "/api/notes/export"; });
+      const importButton = document.querySelector("[data-import-notes]");
+      if (importButton) importButton.addEventListener("click", () => $("notesImportInput").click());
+      const importInput = $("notesImportInput");
+      if (importInput) importInput.addEventListener("change", importNotesFile);
     }
 
     function openNote(key) {
@@ -998,11 +1023,13 @@
             <span class="pill">${esc(note.record_type)}</span>
             <span class="pill">ID: ${esc(note.record_id)}</span>
             ${note.requires_correction ? `<span class="pill warn">Requires correction</span>` : ""}
+            ${note.resolved ? `<span class="pill">Resolved</span>` : `<span class="pill warn">Open</span>`}
           </div>
         </div>
         <div class="field-value">${esc(note.comment || "")}</div>
         <div class="preview-actions">
           <button type="button" data-open-record="${esc(note.record_type)}:${esc(note.record_id)}">Open record</button>
+          <button type="button" data-toggle-note-resolved="${esc(note.key)}">${note.resolved ? "Mark as open" : "Mark as resolved"}</button>
         </div>
       `;
       const button = document.querySelector("[data-open-record]");
@@ -1013,6 +1040,24 @@
           setTimeout(() => type === "color_group" ? loadColorGroup(Number(id)) : loadDetail(Number(id)), 150);
         });
       }
+      const resolvedButton = document.querySelector("[data-toggle-note-resolved]");
+      if (resolvedButton) {
+        resolvedButton.addEventListener("click", async () => {
+          await apiPost("/api/notes", { ...note, resolved: !note.resolved });
+          await loadList();
+        });
+      }
+    }
+
+    async function importNotesFile() {
+      const input = $("notesImportInput");
+      if (!input.files.length) return;
+      const text = await input.files[0].text();
+      const payload = JSON.parse(text);
+      const result = await apiPost("/api/notes/import", payload);
+      $("notesImportStatus").textContent = `Imported ${result.imported} notes. Total: ${result.total}.`;
+      input.value = "";
+      await loadList();
     }
 
     function renderList() {
@@ -1054,6 +1099,7 @@
       if (requestId !== state.requestId) return;
       $("detail").innerHTML = state.mode === "products" ? renderProduct(data) : state.mode === "colors" ? renderColor(data) : renderSystem(data);
       attachColorTileEvents();
+      attachSystemProductLinks();
       attachCorrectionPanel(data, state.mode === "products" ? "product" : state.mode === "systems" ? "system" : "color");
     }
 
@@ -1133,6 +1179,7 @@
     function correctionPanel(recordType, data) {
       return `<div class="correction-panel" data-correction-panel data-record-type="${esc(recordType)}" data-record-id="${esc(data.id)}" data-record-name="${esc(data.name)}">
         <label><input type="checkbox" data-correction-required> Requires correction</label>
+        <label><input type="checkbox" data-correction-resolved> Corrected / resolved</label>
         <textarea data-correction-comment placeholder="Describe what should be corrected for this record..."></textarea>
         <button type="button" data-save-correction>Save note</button>
         <div class="muted" data-correction-status></div>
@@ -1144,6 +1191,7 @@
       if (!panel) return;
       const note = await api(`/api/notes/${recordType}/${data.id}`);
       panel.querySelector("[data-correction-required]").checked = Boolean(note.requires_correction);
+      panel.querySelector("[data-correction-resolved]").checked = Boolean(note.resolved);
       panel.querySelector("[data-correction-comment]").value = note.comment || "";
       panel.querySelector("[data-save-correction]").addEventListener("click", async () => {
         const payload = {
@@ -1151,6 +1199,7 @@
           record_id: data.id,
           record_name: data.name,
           requires_correction: panel.querySelector("[data-correction-required]").checked,
+          resolved: panel.querySelector("[data-correction-resolved]").checked,
           comment: panel.querySelector("[data-correction-comment]").value,
         };
         const saved = await apiPost("/api/notes", payload);
@@ -1696,9 +1745,20 @@
         return `<option value="${index}">${esc(label)}</option>`;
       }).join("");
       const chips = products.map((item) => `
-        <span class="product-chip">${esc(item.product_name || item.product_id)}${item.variant ? `, variant ${esc(item.variant)}` : ""}</span>
+        ${item.linked_product_id
+          ? `<button class="product-chip" type="button" data-linked-product-id="${esc(item.linked_product_id)}">${esc(item.product_name || item.product_id)}${item.variant ? `, variant ${esc(item.variant)}` : ""}</button>`
+          : `<span class="product-chip">${esc(item.product_name || item.product_id)}${item.variant ? `, variant ${esc(item.variant)}` : ""}</span>`}
       `).join("");
       return `<div class="product-choice"><select>${options}</select><div>${chips}</div></div>`;
+    }
+
+    function attachSystemProductLinks() {
+      for (const button of document.querySelectorAll("[data-linked-product-id]")) {
+        button.addEventListener("click", () => {
+          setMode("products");
+          setTimeout(() => loadDetail(Number(button.dataset.linkedProductId)), 150);
+        });
+      }
     }
 
     function fieldGrid(items) {
