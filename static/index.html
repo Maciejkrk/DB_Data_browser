@@ -11,10 +11,13 @@
       --line: #d7dee8;
       --text: #172033;
       --muted: #667085;
-      --accent: #0f766e;
-      --accent-soft: #e6fffb;
+      --accent: #2563eb;
+      --accent-soft: #dbeafe;
       --ink-soft: #f8fafc;
       --danger: #9a3412;
+      --danger-soft: #fee2e2;
+      --success: #15803d;
+      --success-soft: #dcfce7;
     }
     * { box-sizing: border-box; }
     body {
@@ -216,6 +219,7 @@
       gap: 12px;
     }
     .result-card {
+      position: relative;
       display: grid;
       gap: 8px;
       width: 100%;
@@ -227,6 +231,45 @@
       background: #fff;
       text-align: left;
       color: var(--text);
+    }
+    .result-card.selected {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px rgba(37, 99, 235, .18);
+    }
+    .result-select {
+      position: absolute;
+      margin: 8px;
+      width: auto;
+      z-index: 1;
+    }
+    .status-pill {
+      display: inline-block;
+      margin: 0 10px 10px;
+      padding: 3px 7px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .status-accepted {
+      background: var(--success-soft);
+      color: var(--success);
+    }
+    .status-not-accepted {
+      background: var(--danger-soft);
+      color: #991b1b;
+    }
+    .results-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+    .results-actions button {
+      width: auto;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: #fff;
     }
     .result-card:hover {
       border-color: var(--accent);
@@ -626,7 +669,19 @@
     </div>
   </div>
   <script>
-    const state = { mode: "products", items: [], selectedId: null, filters: { products: {}, systems: {}, colors: {}, corrections: {} }, filterDefs: [], requestId: 0, ai: { available: false }, summary: null };
+    const state = {
+      mode: "products",
+      view: "grid",
+      items: [],
+      selectedId: null,
+      selectedRecords: new Set(),
+      filters: { products: {}, systems: {}, colors: {}, corrections: {} },
+      filterDefs: [],
+      notesByKey: {},
+      requestId: 0,
+      ai: { available: false },
+      summary: null,
+    };
     const REQUIRED_FILES = [
       "productsModels.json",
       "productsAttributes.json",
@@ -667,6 +722,7 @@
     function setMode(mode) {
       state.mode = mode;
       state.selectedId = null;
+      state.selectedRecords = new Set();
       $("productsTab").classList.toggle("active", mode === "products");
       $("systemsTab").classList.toggle("active", mode === "systems");
       $("colorsTab").classList.toggle("active", mode === "colors");
@@ -676,6 +732,22 @@
       $("searchInput").value = "";
       renderFilterOptions();
       loadList();
+    }
+
+    function recordTypeForMode(mode = state.mode) {
+      if (mode === "products") return "product";
+      if (mode === "systems") return "system";
+      if (mode === "colors") return "color_group";
+      return "";
+    }
+
+    async function refreshNotesIndex() {
+      const data = await api("/api/notes");
+      state.notesByKey = Object.fromEntries((data.items || []).map((item) => [item.key, item]));
+    }
+
+    function noteForItem(item, type = recordTypeForMode()) {
+      return state.notesByKey[`${type}:${item.id}`] || { accepted: false, resolved: false, attachments: [] };
     }
 
     async function loadSourceStatus() {
@@ -830,6 +902,7 @@
         ? (data.items || []).filter((item) => !query || `${item.name} ${item.description || ""}`.toLowerCase().includes(decodeURIComponent(query).toLowerCase()))
         : data.items || [];
       state.filterDefs = data.filters || [];
+      if (state.mode !== "corrections") await refreshNotesIndex();
       renderFilterOptions();
       if (state.mode === "corrections") {
         renderNotesList();
@@ -922,19 +995,88 @@
         ${startupWarning()}
         <div class="results-head">
           <h2>${state.items.length} ${label}</h2>
+          <div class="results-actions">
+            <button type="button" data-view-mode="grid"${state.view === "grid" ? " disabled" : ""}>Tiles</button>
+            <button type="button" data-view-mode="list"${state.view === "list" ? " disabled" : ""}>List</button>
+            <button type="button" data-bulk-accept="true">Accept selected</button>
+            <button type="button" data-bulk-accept="false">Mark selected not accepted</button>
+          </div>
         </div>
-        <div class="results-grid">
-          ${state.items.map((item) => `
-            <button class="result-card" type="button" data-result-id="${esc(item.id)}">
-              ${item.thumbnail ? `<img src="${esc(item.thumbnail)}" alt="${esc(item.name)}">` : `<span class="result-placeholder">${state.mode === "products" ? "P" : "S"}</span>`}
-              <span class="result-title">${esc(item.name)}</span>
-            </button>
-          `).join("") || `<div class="muted">No results.</div>`}
-        </div>
+        ${state.view === "list" ? resultsList(label) : resultsGrid()}
       `;
+      for (const button of document.querySelectorAll("[data-view-mode]")) {
+        button.addEventListener("click", () => {
+          state.view = button.dataset.viewMode;
+          renderResults();
+        });
+      }
+      for (const button of document.querySelectorAll("[data-bulk-accept]")) {
+        button.addEventListener("click", () => bulkAcceptSelected(button.dataset.bulkAccept === "true"));
+      }
       for (const button of document.querySelectorAll("[data-result-id]")) {
         button.addEventListener("click", () => loadDetail(Number(button.dataset.resultId)));
       }
+      for (const input of document.querySelectorAll("[data-select-record]")) {
+        input.addEventListener("click", (event) => event.stopPropagation());
+        input.addEventListener("change", () => {
+          const id = String(input.dataset.selectRecord);
+          if (input.checked) state.selectedRecords.add(id);
+          else state.selectedRecords.delete(id);
+          renderResults();
+        });
+      }
+    }
+
+    function resultsGrid() {
+      return `<div class="results-grid">
+        ${state.items.map((item) => {
+          const note = noteForItem(item);
+          const selected = state.selectedRecords.has(String(item.id));
+          return `<button class="result-card${selected ? " selected" : ""}" type="button" data-result-id="${esc(item.id)}">
+            <input class="result-select" type="checkbox" data-select-record="${esc(item.id)}"${selected ? " checked" : ""}>
+            ${item.thumbnail ? `<img src="${esc(item.thumbnail)}" alt="${esc(item.name)}">` : `<span class="result-placeholder">${state.mode === "products" ? "P" : "S"}</span>`}
+            <span class="result-title">${esc(item.name)}</span>
+            ${acceptancePill(note)}
+          </button>`;
+        }).join("") || `<div class="muted">No results.</div>`}
+      </div>`;
+    }
+
+    function resultsList(label) {
+      return `<div class="data-table">
+        <table>
+          <thead><tr><th></th><th>Name</th><th>Status</th><th>Preview fields</th></tr></thead>
+          <tbody>${state.items.map((item) => {
+            const note = noteForItem(item);
+            const selected = state.selectedRecords.has(String(item.id));
+            const fields = (item.preview_fields || []).map((field) => `<strong>${esc(field.label)}:</strong> ${esc(field.value)}`).join("<br>");
+            return `<tr>
+              <td><input type="checkbox" data-select-record="${esc(item.id)}"${selected ? " checked" : ""}></td>
+              <td><button type="button" data-result-id="${esc(item.id)}">${esc(item.name)}</button><br><span class="muted">ID: ${esc(item.id)}</span></td>
+              <td>${acceptancePill(note)}</td>
+              <td>${fields || `<span class="muted">No preview fields.</span>`}</td>
+            </tr>`;
+          }).join("") || `<tr><td colspan="4" class="muted">No ${esc(label)}.</td></tr>`}</tbody>
+        </table>
+      </div>`;
+    }
+
+    function acceptancePill(note) {
+      return note.accepted
+        ? `<span class="status-pill status-accepted">Accepted</span>`
+        : `<span class="status-pill status-not-accepted">Not accepted</span>`;
+    }
+
+    async function bulkAcceptSelected(accepted) {
+      const records = state.items
+        .filter((item) => state.selectedRecords.has(String(item.id)))
+        .map((item) => ({ id: item.id, name: item.name }));
+      if (!records.length) return;
+      await apiPost("/api/records/accept", { record_type: recordTypeForMode(), accepted, records });
+      state.selectedRecords = new Set();
+      await refreshNotesIndex();
+      if (state.mode === "colors") renderList();
+      else renderResults();
     }
 
     function startupWarning() {
@@ -959,6 +1101,8 @@
             <span>${esc(item.record_type)}</span>
             <span>ID: ${esc(item.record_id)}</span>
             ${item.requires_correction ? "<span>requires correction</span>" : ""}
+            ${item.accepted ? "<span>accepted</span>" : "<span>not accepted</span>"}
+            ${item.resolved ? "<span>resolved</span>" : ""}
           </span>
         </button>
       `).join("") || `<div class="item"><span class="muted">No corrections saved.</span></div>`;
@@ -1025,6 +1169,7 @@
           <div class="summary">
             <span class="pill">${esc(note.record_type)}</span>
             <span class="pill">ID: ${esc(note.record_id)}</span>
+            ${note.accepted ? `<span class="pill status-accepted">Accepted</span>` : `<span class="pill status-not-accepted">Not accepted</span>`}
             ${note.requires_correction ? `<span class="pill warn">Requires correction</span>` : ""}
             ${note.resolved ? `<span class="pill">Resolved</span>` : `<span class="pill warn">Open</span>`}
           </div>
@@ -1064,17 +1209,37 @@
     }
 
     function renderList() {
-      $("list").innerHTML = state.items.map((item) => {
+      const colorActions = state.mode === "colors" ? `<div class="filters">
+        <button class="clear-filters" type="button" data-bulk-accept="true">Accept selected</button>
+        <button class="clear-filters" type="button" data-bulk-accept="false">Mark selected not accepted</button>
+      </div>` : "";
+      $("list").innerHTML = colorActions + state.items.map((item) => {
         const meta = state.mode === "products"
           ? [item.unit ? `unit: ${item.unit}` : "", ...(item.categories || []).slice(0, 3)]
           : state.mode === "colors"
             ? [`${item.count || 0} items`, ...(item.used_by_products || []).length ? [`products: ${item.used_by_products.length}`] : []]
             : [item.type, item.insulation, item.bim_type];
+        const note = state.mode === "colors" ? noteForItem(item, "color_group") : null;
+        const selected = state.selectedRecords.has(String(item.id));
         return `<button class="item${item.id === state.selectedId ? " active" : ""}" type="button" data-id="${esc(item.id)}" data-kind="${state.mode}">
+          ${state.mode === "colors" ? `<input type="checkbox" data-select-record="${esc(item.id)}"${selected ? " checked" : ""}>` : ""}
           <span class="item-title">${esc(item.name)}</span>
           <span class="item-meta">${meta.filter(Boolean).map((value) => `<span>${esc(value)}</span>`).join("")}</span>
+          ${note ? acceptancePill(note) : ""}
         </button>`;
       }).join("") || `<div class="item"><span class="muted">No results.</span></div>`;
+      for (const button of document.querySelectorAll("[data-bulk-accept]")) {
+        button.addEventListener("click", () => bulkAcceptSelected(button.dataset.bulkAccept === "true"));
+      }
+      for (const input of document.querySelectorAll("[data-select-record]")) {
+        input.addEventListener("click", (event) => event.stopPropagation());
+        input.addEventListener("change", () => {
+          const id = String(input.dataset.selectRecord);
+          if (input.checked) state.selectedRecords.add(id);
+          else state.selectedRecords.delete(id);
+          renderList();
+        });
+      }
       for (const button of document.querySelectorAll(".item[data-id]")) {
         button.addEventListener("click", () => {
           if (state.mode === "colors") loadColorGroup(Number(button.dataset.id));
@@ -1181,9 +1346,12 @@
 
     function correctionPanel(recordType, data) {
       return `<div class="correction-panel" data-correction-panel data-record-type="${esc(recordType)}" data-record-id="${esc(data.id)}" data-record-name="${esc(data.name)}">
+        <label><input type="checkbox" data-record-accepted> Accepted</label>
         <label><input type="checkbox" data-correction-required> Requires correction</label>
         <label><input type="checkbox" data-correction-resolved> Corrected / resolved</label>
         <textarea data-correction-comment placeholder="Describe what should be corrected for this record..."></textarea>
+        <input type="file" data-correction-attachment>
+        <div data-correction-attachments></div>
         <button type="button" data-save-correction>Save note</button>
         <div class="muted" data-correction-status></div>
       </div>`;
@@ -1193,20 +1361,49 @@
       const panel = root.querySelector("[data-correction-panel]");
       if (!panel) return;
       const note = await api(`/api/notes/${recordType}/${data.id}`);
+      panel.querySelector("[data-record-accepted]").checked = Boolean(note.accepted);
       panel.querySelector("[data-correction-required]").checked = Boolean(note.requires_correction);
       panel.querySelector("[data-correction-resolved]").checked = Boolean(note.resolved);
       panel.querySelector("[data-correction-comment]").value = note.comment || "";
+      renderAttachments(panel, note.attachments || []);
       panel.querySelector("[data-save-correction]").addEventListener("click", async () => {
+        const attachment = await selectedAttachmentPayload(panel.querySelector("[data-correction-attachment]"));
         const payload = {
           record_type: recordType,
           record_id: data.id,
           record_name: data.name,
+          accepted: panel.querySelector("[data-record-accepted]").checked,
           requires_correction: panel.querySelector("[data-correction-required]").checked,
           resolved: panel.querySelector("[data-correction-resolved]").checked,
           comment: panel.querySelector("[data-correction-comment]").value,
+          ...(attachment ? { attachment } : {}),
         };
         const saved = await apiPost("/api/notes", payload);
+        renderAttachments(panel, saved.attachments || []);
+        panel.querySelector("[data-correction-attachment]").value = "";
         panel.querySelector("[data-correction-status]").textContent = saved.comment || saved.requires_correction ? "Saved." : "Note cleared.";
+      });
+    }
+
+    function renderAttachments(panel, attachments) {
+      const host = panel.querySelector("[data-correction-attachments]");
+      if (!host) return;
+      host.innerHTML = (attachments || []).length
+        ? `<div class="relation-list">${attachments.map((item) => `<a class="relation-item" href="${esc(item.url)}" target="_blank" rel="noreferrer">${esc(item.name)} (${esc(item.size || 0)} B)</a>`).join("")}</div>`
+        : `<div class="muted">No attachments.</div>`;
+    }
+
+    function selectedAttachmentPayload(input) {
+      return new Promise((resolve, reject) => {
+        if (!input || !input.files || !input.files.length) {
+          resolve(null);
+          return;
+        }
+        const file = input.files[0];
+        const reader = new FileReader();
+        reader.onload = () => resolve({ name: file.name, content_type: file.type, data: reader.result });
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(file);
       });
     }
 

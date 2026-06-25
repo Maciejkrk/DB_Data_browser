@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import cgi
 import csv
 import io
@@ -18,6 +19,7 @@ from urllib.request import Request, urlopen
 APP_DIR = Path(__file__).resolve().parent
 DEFAULT_DATA_DIR = APP_DIR / "data"
 NOTES_FILE = "browser_corrections.json"
+ATTACHMENTS_DIR = "correction_attachments"
 REQUIRED_FILES = [
     "productsModels.json",
     "productsAttributes.json",
@@ -82,8 +84,10 @@ def notes_as_csv(notes: list[dict]) -> str:
             "record_id",
             "record_name",
             "status",
+            "accepted",
             "requires_correction",
             "comment",
+            "attachments",
             "updated_at",
             "resolved_at",
         ],
@@ -99,8 +103,10 @@ def notes_as_csv(notes: list[dict]) -> str:
                 "record_id": note.get("record_id", ""),
                 "record_name": note.get("record_name", ""),
                 "status": "resolved" if note.get("resolved") else "open",
+                "accepted": "yes" if note.get("accepted") else "no",
                 "requires_correction": "yes" if note.get("requires_correction") else "no",
                 "comment": note.get("comment", ""),
+                "attachments": ", ".join(item.get("name", "") for item in note.get("attachments", [])),
                 "updated_at": note.get("updated_at", ""),
                 "resolved_at": note.get("resolved_at", ""),
             }
@@ -564,6 +570,23 @@ def compact_text(value: object, limit: int = 400) -> str:
     return text[:limit]
 
 
+def preview_fields(items: list[dict], limit: int = 3) -> list[dict]:
+    fields = []
+    for item in items:
+        value = item.get("value")
+        if value in (None, "", False, True):
+            continue
+        fields.append({"label": item.get("label", ""), "value": compact_text(value, 120)})
+        if len(fields) >= limit:
+            break
+    return fields
+
+
+def safe_filename(value: str) -> str:
+    name = Path(value or "attachment").name
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", name)[:120] or "attachment"
+
+
 def extract_ai_answer(payload: object) -> str:
     if isinstance(payload, str):
         return payload.strip()
@@ -789,6 +812,7 @@ class PimData:
             "categories": categories,
             "attribute_count": len(attrs),
             "thumbnail": next((item["url"] for item in file_media(latest_version) if item.get("kind") == "image"), ""),
+            "preview_fields": preview_fields(root_values),
         }
         if compact:
             return result
@@ -994,6 +1018,7 @@ class PimData:
             "sample_colors": [self.color_detail(color_id, compact=True) for color_id in color_ids[:12] if color_id in self.color_index],
             "media": media,
             "used_by_products": self.product_color_usage.get(f"2:{group_id}", []),
+            "preview_fields": [{"label": "Items", "value": len(color_ids)}, *preview_fields([{"label": key, "value": value} for key, value in params.items()], 2)],
         }
         if not compact:
             result["parameters"] = [{"name": key, "value": value} for key, value in params.items()]
@@ -1023,6 +1048,7 @@ class PimData:
             "insulation": next((item["value"] for item in root_values if item["attribute_id"] == 292), ""),
             "bim_type": next((item["value"] for item in root_values if item["attribute_id"] == 299), ""),
             "thumbnail": next((item["url"] for item in file_media(latest_version) if item.get("kind") == "image"), ""),
+            "preview_fields": preview_fields(root_values),
         }
         if compact:
             return result
@@ -1094,12 +1120,15 @@ class PimData:
 class NotesStore:
     def __init__(self, data_dir: Path) -> None:
         self.path = data_dir / NOTES_FILE
+        self.attachments_dir = data_dir / ATTACHMENTS_DIR
 
     def load(self) -> dict:
         payload = load_json_if_exists(self.path, {"notes": []})
         payload.setdefault("notes", [])
         for note in payload["notes"]:
             note.setdefault("resolved", False)
+            note.setdefault("accepted", False)
+            note.setdefault("attachments", [])
         return payload
 
     def list_notes(self) -> dict:
@@ -1117,6 +1146,8 @@ class NotesStore:
             "record_id": record_id,
             "requires_correction": False,
             "resolved": False,
+            "accepted": False,
+            "attachments": [],
             "comment": "",
         }
 
@@ -1125,6 +1156,13 @@ class NotesStore:
         record_id = int(payload.get("record_id") or 0)
         key = self.note_key(record_type, record_id)
         now = int(time.time())
+        existing = self.get_note(record_type, record_id)
+        attachments = list(existing.get("attachments") or [])
+        attachment = payload.get("attachment")
+        if isinstance(attachment, dict):
+            saved_attachment = self.save_attachment(key, attachment)
+            if saved_attachment:
+                attachments.append(saved_attachment)
         note = {
             "key": key,
             "record_type": record_type,
@@ -1132,18 +1170,70 @@ class NotesStore:
             "record_name": str(payload.get("record_name") or ""),
             "requires_correction": bool(payload.get("requires_correction")),
             "resolved": bool(payload.get("resolved")),
+            "accepted": bool(payload.get("accepted")),
             "comment": str(payload.get("comment") or "").strip(),
+            "attachments": attachments,
             "updated_at": now,
         }
         if note["resolved"]:
             note["resolved_at"] = now
         data = self.load()
         notes = [item for item in data["notes"] if item.get("key") != key]
-        if note["requires_correction"] or note["comment"] or note["resolved"]:
+        if note["requires_correction"] or note["comment"] or note["resolved"] or note["accepted"] or note["attachments"]:
             notes.append(note)
         data["notes"] = notes
         write_json(self.path, data)
         return note
+
+    def save_attachment(self, key: str, attachment: dict) -> dict | None:
+        raw = str(attachment.get("data") or "")
+        if not raw:
+            return None
+        if "," in raw and raw.startswith("data:"):
+            raw = raw.split(",", 1)[1]
+        try:
+            content = base64.b64decode(raw)
+        except Exception:
+            return None
+        folder = self.attachments_dir / safe_filename(key)
+        folder.mkdir(parents=True, exist_ok=True)
+        filename = f"{int(time.time())}_{safe_filename(str(attachment.get('name') or 'attachment'))}"
+        path = folder / filename
+        path.write_bytes(content)
+        return {
+            "name": str(attachment.get("name") or filename),
+            "stored_name": filename,
+            "content_type": str(attachment.get("content_type") or "application/octet-stream"),
+            "size": len(content),
+            "url": f"/api/notes/attachment/{safe_filename(key)}/{filename}",
+        }
+
+    def attachment_path(self, key: str, filename: str) -> Path:
+        return self.attachments_dir / safe_filename(key) / safe_filename(filename)
+
+    def bulk_accept(self, payload: dict) -> dict:
+        record_type = str(payload.get("record_type") or "")
+        accepted = bool(payload.get("accepted"))
+        records = payload.get("records") or []
+        count = 0
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            record_id = int(record.get("id") or 0)
+            if not record_type or not record_id:
+                continue
+            existing = self.get_note(record_type, record_id)
+            self.save_note(
+                {
+                    **existing,
+                    "record_type": record_type,
+                    "record_id": record_id,
+                    "record_name": str(record.get("name") or existing.get("record_name") or ""),
+                    "accepted": accepted,
+                }
+            )
+            count += 1
+        return {"updated": count, "accepted": accepted}
 
     def import_notes(self, payload: dict) -> dict:
         incoming = payload.get("notes") if isinstance(payload, dict) else None
@@ -1169,7 +1259,9 @@ class NotesStore:
                 "record_name": str(item.get("record_name") or ""),
                 "requires_correction": bool(item.get("requires_correction")),
                 "resolved": bool(item.get("resolved")),
+                "accepted": bool(item.get("accepted")),
                 "comment": str(item.get("comment") or "").strip(),
+                "attachments": list(item.get("attachments") or []),
                 "updated_at": int(item.get("updated_at") or time.time()),
             }
             if item.get("resolved_at"):
@@ -1401,6 +1493,9 @@ def make_store_handler(store: DataStore):
                 except ValueError as error:
                     self.send_json({"error": str(error)}, status=400)
                 return
+            if parsed.path == "/api/records/accept":
+                self.send_json(store.notes.bulk_accept(read_json_body(self)))
+                return
             if parsed.path == "/api/ai/search":
                 payload = read_json_body(self)
                 question = str(payload.get("question") or "")
@@ -1430,6 +1525,10 @@ def make_store_handler(store: DataStore):
                     return
                 elif parsed.path == "/api/notes/export.csv":
                     self.send_csv(notes_as_csv(store.notes.list_notes()["items"]), "browser_corrections.csv")
+                    return
+                elif parsed.path.startswith("/api/notes/attachment/"):
+                    _, key, filename = parsed.path.rsplit("/", 2)
+                    self.send_file(store.notes.attachment_path(unquote(key), unquote(filename)))
                     return
                 elif parsed.path.startswith("/api/notes/"):
                     _, record_type, record_id = parsed.path.rsplit("/", 2)
@@ -1472,6 +1571,19 @@ def make_store_handler(store: DataStore):
             self.send_response(200)
             self.send_header("Content-Type", content_type)
             self.send_header("Cache-Control", "public, max-age=3600")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def send_file(self, path: Path):
+            if not path.exists() or not path.is_file():
+                self.send_json({"error": "Attachment not found"}, status=404)
+                return
+            body = path.read_bytes()
+            content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Disposition", f'attachment; filename="{path.name}"')
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
