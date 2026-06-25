@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import cgi
+import csv
+import io
 import json
 import mimetypes
 import os
@@ -68,6 +70,42 @@ def read_json_body(handler) -> dict:
 def write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def notes_as_csv(notes: list[dict]) -> str:
+    output = io.StringIO()
+    writer = csv.DictWriter(
+        output,
+        fieldnames=[
+            "key",
+            "record_type",
+            "record_id",
+            "record_name",
+            "status",
+            "requires_correction",
+            "comment",
+            "updated_at",
+            "resolved_at",
+        ],
+        delimiter=";",
+        lineterminator="\n",
+    )
+    writer.writeheader()
+    for note in notes:
+        writer.writerow(
+            {
+                "key": note.get("key", ""),
+                "record_type": note.get("record_type", ""),
+                "record_id": note.get("record_id", ""),
+                "record_name": note.get("record_name", ""),
+                "status": "resolved" if note.get("resolved") else "open",
+                "requires_correction": "yes" if note.get("requires_correction") else "no",
+                "comment": note.get("comment", ""),
+                "updated_at": note.get("updated_at", ""),
+                "resolved_at": note.get("resolved_at", ""),
+            }
+        )
+    return output.getvalue()
 
 
 def first_value(attr: dict, attr_def: dict | None = None) -> object:
@@ -1390,6 +1428,9 @@ def make_store_handler(store: DataStore):
                 elif parsed.path == "/api/notes/export":
                     self.send_download(store.notes.load(), "browser_corrections.json")
                     return
+                elif parsed.path == "/api/notes/export.csv":
+                    self.send_csv(notes_as_csv(store.notes.list_notes()["items"]), "browser_corrections.csv")
+                    return
                 elif parsed.path.startswith("/api/notes/"):
                     _, record_type, record_id = parsed.path.rsplit("/", 2)
                     payload = store.notes.get_note(unquote(record_type), int(unquote(record_id)))
@@ -1477,6 +1518,15 @@ def make_store_handler(store: DataStore):
             body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def send_csv(self, text: str, filename: str):
+            body = ("\ufeff" + text).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/csv; charset=utf-8")
             self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()

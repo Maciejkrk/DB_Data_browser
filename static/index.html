@@ -979,7 +979,8 @@
             <span class="pill">${esc(resolvedCount)} resolved</span>
           </div>
           <div class="preview-actions">
-            <button type="button" data-export-notes>Export notes</button>
+            <button type="button" data-export-notes>Export JSON</button>
+            <button type="button" data-export-notes-csv>Export Excel CSV</button>
             <input id="notesImportInput" type="file" accept=".json" hidden>
             <button type="button" data-import-notes>Import notes</button>
           </div>
@@ -1005,6 +1006,8 @@
       }
       const exportButton = document.querySelector("[data-export-notes]");
       if (exportButton) exportButton.addEventListener("click", () => { window.location.href = "/api/notes/export"; });
+      const exportCsvButton = document.querySelector("[data-export-notes-csv]");
+      if (exportCsvButton) exportCsvButton.addEventListener("click", () => { window.location.href = "/api/notes/export.csv"; });
       const importButton = document.querySelector("[data-import-notes]");
       if (importButton) importButton.addEventListener("click", () => $("notesImportInput").click());
       const importInput = $("notesImportInput");
