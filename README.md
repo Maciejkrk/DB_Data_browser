@@ -117,4 +117,4 @@ http://SERVER_ADDRESS:8788
 ```
 
 Their acceptance status, correction notes, resolved flags, and attachments are saved on the server.
-Use `Review project` in the application header to set project metadata and export the whole review package.
+Use `Review project` in the application header to set project metadata, export the whole review package, or import a previously exported review package.

@@ -1417,6 +1417,21 @@ class ReviewProjectStore:
             "exported_at": int(time.time()),
         }
 
+    def import_bundle(self, payload: dict, data: PimData | None, source_status: dict) -> dict:
+        if not isinstance(payload, dict):
+            raise ValueError("Expected review project JSON object")
+        project = payload.get("project")
+        if not isinstance(project, dict):
+            project = payload
+        saved_project = self.save(project)
+        imported_notes = {"imported": 0, "total": len(self.notes.list_notes()["items"])}
+        if isinstance(payload.get("notes"), list):
+            imported_notes = self.notes.import_notes({"notes": payload["notes"]})
+        result = self.summary(data, source_status)
+        result["imported_notes"] = imported_notes
+        result["project"] = saved_project
+        return result
+
 
 def project_progress(notes: list[dict], data: PimData | None) -> dict:
     totals = {
@@ -1672,6 +1687,12 @@ def make_store_handler(store: DataStore):
             if parsed.path == "/api/project":
                 store.project.save(read_json_body(self))
                 self.send_json(store.project.summary(store.data, store.status()))
+                return
+            if parsed.path == "/api/project/import":
+                try:
+                    self.send_json(store.project.import_bundle(read_json_body(self), store.data, store.status()))
+                except ValueError as error:
+                    self.send_json({"error": str(error)}, status=400)
                 return
             if parsed.path == "/api/notes/import":
                 try:

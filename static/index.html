@@ -1144,6 +1144,8 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
           <div class="preview-actions">
             <button type="button" data-save-project>Save project</button>
             <button type="button" data-export-project>Export project package</button>
+            <input id="projectImportInput" type="file" accept=".json" hidden>
+            <button type="button" data-import-project>Import project package</button>
           </div>
           <div id="projectSaveStatus" class="muted"></div>
         </div>
@@ -1153,6 +1155,8 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       document.querySelector("[data-export-project]").addEventListener("click", () => {
         window.location.href = "/api/project/export";
       });
+      document.querySelector("[data-import-project]").addEventListener("click", () => $("projectImportInput").click());
+      $("projectImportInput").addEventListener("change", importProjectPackage);
     }
 
     function projectProgressCard(label, accepted = 0, total = 0, openCorrections = 0) {
@@ -1176,6 +1180,25 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       state.project = await apiPost("/api/project", payload);
       renderProjectHeader();
       $("projectSaveStatus").textContent = "Project saved.";
+    }
+
+    async function importProjectPackage() {
+      const input = $("projectImportInput");
+      if (!input.files.length) return;
+      $("projectSaveStatus").textContent = "Importing project package...";
+      try {
+        const payload = JSON.parse(await input.files[0].text());
+        state.project = await apiPost("/api/project/import", payload);
+        renderProjectHeader();
+        await refreshNotesIndex();
+        if (state.mode === "corrections") await loadList();
+        input.value = "";
+        openProjectModal();
+        $("projectSaveStatus").textContent = `Project imported. Notes: ${state.project.imported_notes?.imported || 0}.`;
+      } catch (error) {
+        $("projectSaveStatus").textContent = error.message || "Could not import project package.";
+        input.value = "";
+      }
     }
 
     async function refreshProjectProgress() {
