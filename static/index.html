@@ -778,6 +778,7 @@
       $("aiStatus").textContent = "Searching with AI...";
       try {
         const result = await apiPost("/api/ai/search", { question, mode: state.mode === "corrections" ? "" : state.mode });
+        const answer = result.answer || result.error || result.status?.reason || "AI returned an empty response.";
         $("detail").innerHTML = `
           <div class="detail-head">
             <h2>AI search result</h2>
@@ -789,8 +790,9 @@
           </div>
           <div class="field">
             <div class="field-label">Answer</div>
-            <div class="field-value">${esc(result.answer || "No answer.")}</div>
+            <div class="field-value">${esc(answer)}</div>
           </div>
+          ${result.raw_keys?.length ? `<div class="muted">Raw response keys: ${esc(result.raw_keys.join(", "))}</div>` : ""}
         `;
         $("aiStatus").textContent = "Done.";
       } catch (error) {

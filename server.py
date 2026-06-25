@@ -526,6 +526,50 @@ def compact_text(value: object, limit: int = 400) -> str:
     return text[:limit]
 
 
+def extract_ai_answer(payload: object) -> str:
+    if isinstance(payload, str):
+        return payload.strip()
+    if isinstance(payload, list):
+        for item in payload:
+            answer = extract_ai_answer(item)
+            if answer:
+                return answer
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    for key in ("response", "answer", "output_text", "text", "content", "result"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if isinstance(value, (dict, list)):
+            answer = extract_ai_answer(value)
+            if answer:
+                return answer
+    message = payload.get("message")
+    if isinstance(message, dict):
+        answer = extract_ai_answer(message)
+        if answer:
+            return answer
+    choices = payload.get("choices")
+    if isinstance(choices, list):
+        for choice in choices:
+            answer = extract_ai_answer(choice)
+            if answer:
+                return answer
+    output = payload.get("output")
+    if isinstance(output, list):
+        for item in output:
+            answer = extract_ai_answer(item)
+            if answer:
+                return answer
+    data = payload.get("data")
+    if isinstance(data, (dict, list)):
+        answer = extract_ai_answer(data)
+        if answer:
+            return answer
+    return ""
+
+
 class PimData:
     def __init__(self, data_dir: Path) -> None:
         self.data_dir = data_dir
@@ -1098,7 +1142,11 @@ class AiAgent:
         request = Request(endpoint, data=body, headers={"Content-Type": "application/json", "User-Agent": "DB-Data-Browser/1.0"})
         with urlopen(request, timeout=45) as response:
             payload = json.loads(response.read().decode("utf-8"))
-        return {"available": True, "answer": payload.get("response") or payload.get("answer") or str(payload), "status": status}
+        answer = extract_ai_answer(payload)
+        raw_keys = sorted(payload.keys()) if isinstance(payload, dict) else []
+        if not answer:
+            answer = f"AI returned an empty text response. Raw response keys: {', '.join(raw_keys) or type(payload).__name__}."
+        return {"available": True, "answer": answer, "status": status, "raw_keys": raw_keys}
 
 
 class DataStore:
