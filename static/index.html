@@ -862,7 +862,9 @@
       aiResult: null,
       detailView: "list",
       rgbSelection: null,
+      colorSearchModel: "rgb",
       rgbRange: { rMin: 0, rMax: 255, gMin: 0, gMax: 255, bMin: 0, bMax: 255 },
+      hsbRange: { hMin: 0, hMax: 360, sMin: 0, sMax: 100, vMin: 0, vMax: 100 },
       rgbMatches: [],
       summary: null,
       project: null,
@@ -1802,7 +1804,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       const data = await api(`/api/colors${params.toString() ? `?${params.toString()}` : ""}`);
       const colorItems = data.items || [];
       const colorsWithRgb = colorItems.filter((item) => item.rgb);
-      const matches = state.rgbSelection ? colorsWithRgb.filter(colorMatchesRgbSelection) : [];
+      const matches = state.rgbSelection ? colorsWithRgb.filter(colorMatchesColorSelection) : [];
       const hasSearch = Boolean(query || kind);
       const visibleColors = state.rgbSelection ? matches : hasSearch ? colorItems : [];
       state.rgbMatches = matches;
@@ -1813,49 +1815,89 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
             <span class="pill">${esc(state.items.length)} groups</span>
             ${hasSearch ? `<span class="pill">${esc(colorItems.length)} keyword matches</span>` : ""}
             <span class="pill">${esc(colorsWithRgb.length)} visual attributes with RGB${hasSearch ? " in current search" : ""}</span>
-            ${state.rgbSelection ? `<span class="pill">${esc(matches.length)} RGB matches</span>` : ""}
+            ${state.rgbSelection ? `<span class="pill">${esc(matches.length)} ${esc(state.colorSearchModel.toUpperCase())} matches</span>` : ""}
           </div>
         </div>
         ${rgbSearchPanel(colorsWithRgb.length, matches.length)}
-        ${visibleColors.length || hasSearch || state.rgbSelection ? renderColorSearchMatches(visibleColors, state.rgbSelection ? "RGB range matches" : "Keyword matches") : `<div class="muted">Select a visual attribute group on the left, type a keyword, or draw an RGB range above to show matching colors and textures.</div>`}
+        ${visibleColors.length || hasSearch || state.rgbSelection ? renderColorSearchMatches(visibleColors, state.rgbSelection ? `${state.colorSearchModel.toUpperCase()} range matches` : "Keyword matches") : `<div class="muted">Select a visual attribute group on the left, type a keyword, or draw a color range above to show matching colors and textures.</div>`}
       `;
       attachRgbSearchEvents();
       attachColorTileEvents();
     }
 
     function rgbSearchPanel(total, matched) {
-      const selection = rgbSelectionRange();
+      const selection = colorSelectionRange();
       return `<div class="rgb-search-panel">
-        <strong>RGB range search</strong>
+        <strong>Color range search</strong>
+        <div class="results-actions">
+          <button type="button" data-color-model="rgb"${state.colorSearchModel === "rgb" ? " disabled" : ""}>RGB</button>
+          <button type="button" data-color-model="hsb"${state.colorSearchModel === "hsb" ? " disabled" : ""}>HSB</button>
+        </div>
         <div class="rgb-search-layout">
           <div class="rgb-map-wrap">
             <canvas id="rgbMapCanvas" width="512" height="512"></canvas>
             ${rgbSelectionBox()}
           </div>
           <div class="rgb-controls">
-            ${rgbRangeControl("R min", "rMin")}
-            ${rgbRangeControl("R max", "rMax")}
-            ${rgbRangeControl("G min", "gMin")}
-            ${rgbRangeControl("G max", "gMax")}
-            ${rgbRangeControl("B min", "bMin")}
-            ${rgbRangeControl("B max", "bMax")}
+            ${state.colorSearchModel === "hsb" ? hsbControls() : rgbControls()}
             <div class="rgb-readout">
               <div>RGB records available: ${esc(total)}</div>
-              <div>${state.rgbSelection ? `Matches: ${esc(matched)}` : "Draw a rectangle on the map to set R/G range, then adjust any RGB component below."}</div>
-              <div>R ${esc(selection.rMin)}-${esc(selection.rMax)}, G ${esc(selection.gMin)}-${esc(selection.gMax)}, B ${esc(selection.bMin)}-${esc(selection.bMax)}</div>
+              <div>${state.rgbSelection ? `Matches: ${esc(matched)}` : colorSelectionHelp()}</div>
+              <div>${colorSelectionLabel(selection)}</div>
             </div>
             <div class="preview-actions">
-              <button type="button" data-clear-rgb-selection${state.rgbSelection ? "" : " disabled"}>Clear RGB range</button>
+              <button type="button" data-clear-rgb-selection${state.rgbSelection ? "" : " disabled"}>Clear color range</button>
             </div>
           </div>
         </div>
       </div>`;
     }
 
+    function rgbControls() {
+      return [
+        rgbRangeControl("R min", "rMin"),
+        rgbRangeControl("R max", "rMax"),
+        rgbRangeControl("G min", "gMin"),
+        rgbRangeControl("G max", "gMax"),
+        rgbRangeControl("B min", "bMin"),
+        rgbRangeControl("B max", "bMax"),
+      ].join("");
+    }
+
+    function hsbControls() {
+      return [
+        hsbRangeControl("Hue min", "hMin", 360),
+        hsbRangeControl("Hue max", "hMax", 360),
+        hsbRangeControl("Saturation min", "sMin", 100),
+        hsbRangeControl("Saturation max", "sMax", 100),
+        hsbRangeControl("Brightness min", "vMin", 100),
+        hsbRangeControl("Brightness max", "vMax", 100),
+      ].join("");
+    }
+
     function rgbRangeControl(label, key) {
       return `<label>${esc(label)}: ${esc(state.rgbRange[key])}
         <input data-rgb-range="${esc(key)}" type="range" min="0" max="255" value="${esc(state.rgbRange[key])}">
       </label>`;
+    }
+
+    function hsbRangeControl(label, key, max) {
+      return `<label>${esc(label)}: ${esc(state.hsbRange[key])}
+        <input data-hsb-range="${esc(key)}" type="range" min="0" max="${esc(max)}" value="${esc(state.hsbRange[key])}">
+      </label>`;
+    }
+
+    function colorSelectionHelp() {
+      return state.colorSearchModel === "hsb"
+        ? "Draw a rectangle on the map to set Hue/Saturation range, then adjust Brightness below."
+        : "Draw a rectangle on the map to set R/G range, then adjust any RGB component below.";
+    }
+
+    function colorSelectionLabel(selection) {
+      if (state.colorSearchModel === "hsb") {
+        return `H ${selection.hMin}-${selection.hMax}, S ${selection.sMin}-${selection.sMax}, B ${selection.vMin}-${selection.vMax}`;
+      }
+      return `R ${selection.rMin}-${selection.rMax}, G ${selection.gMin}-${selection.gMax}, B ${selection.bMin}-${selection.bMax}`;
     }
 
     function rgbSelectionBox() {
@@ -1874,6 +1916,11 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       };
     }
 
+    function colorSelectionRange() {
+      if (state.colorSearchModel === "hsb") return hsbSelectionRange();
+      return rgbSelectionRange();
+    }
+
     function rgbSelectionRange() {
       return {
         rMin: Math.min(Number(state.rgbRange.rMin), Number(state.rgbRange.rMax)),
@@ -1883,6 +1930,21 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         bMin: Math.min(Number(state.rgbRange.bMin), Number(state.rgbRange.bMax)),
         bMax: Math.max(Number(state.rgbRange.bMin), Number(state.rgbRange.bMax)),
       };
+    }
+
+    function hsbSelectionRange() {
+      return {
+        hMin: Math.min(Number(state.hsbRange.hMin), Number(state.hsbRange.hMax)),
+        hMax: Math.max(Number(state.hsbRange.hMin), Number(state.hsbRange.hMax)),
+        sMin: Math.min(Number(state.hsbRange.sMin), Number(state.hsbRange.sMax)),
+        sMax: Math.max(Number(state.hsbRange.sMin), Number(state.hsbRange.sMax)),
+        vMin: Math.min(Number(state.hsbRange.vMin), Number(state.hsbRange.vMax)),
+        vMax: Math.max(Number(state.hsbRange.vMin), Number(state.hsbRange.vMax)),
+      };
+    }
+
+    function colorMatchesColorSelection(item) {
+      return state.colorSearchModel === "hsb" ? colorMatchesHsbSelection(item) : colorMatchesRgbSelection(item);
     }
 
     function colorMatchesRgbSelection(item) {
@@ -1896,6 +1958,15 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         && r >= range.rMin && r <= range.rMax
         && g >= range.gMin && g <= range.gMax
         && b >= range.bMin && b <= range.bMax;
+    }
+
+    function colorMatchesHsbSelection(item) {
+      const hsb = rgbToHsb(item.rgb || {});
+      const range = hsbSelectionRange();
+      if (!hsb) return false;
+      return hsb.h >= range.hMin && hsb.h <= range.hMax
+        && hsb.s >= range.sMin && hsb.s <= range.sMax
+        && hsb.v >= range.vMin && hsb.v <= range.vMax;
     }
 
     function renderColorSearchMatches(items, title) {
@@ -1919,7 +1990,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
     function attachRgbSearchEvents() {
       const canvas = $("rgbMapCanvas");
       if (!canvas) return;
-      drawRgbMap(canvas);
+      drawColorMap(canvas);
       const updateFromPointer = (event, first = false) => {
         const point = rgbCanvasPoint(canvas, event);
         if (first || !state.rgbSelection) state.rgbSelection = { x1: point.x, y1: point.y, x2: point.x, y2: point.y };
@@ -1929,6 +2000,13 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         }
         syncRgbRangeFromSelection();
       };
+      for (const button of document.querySelectorAll("[data-color-model]")) {
+        button.addEventListener("click", () => {
+          state.colorSearchModel = button.dataset.colorModel;
+          state.rgbSelection = null;
+          renderColorOverview();
+        });
+      }
       let dragging = false;
       canvas.addEventListener("pointerdown", (event) => {
         dragging = true;
@@ -1953,9 +2031,17 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
           renderColorOverview();
         });
       }
+      for (const input of document.querySelectorAll("[data-hsb-range]")) {
+        input.addEventListener("input", () => {
+          state.hsbRange[input.dataset.hsbRange] = Number(input.value);
+          state.rgbSelection = selectionFromHsbRange();
+          renderColorOverview();
+        });
+      }
       document.querySelector("[data-clear-rgb-selection]")?.addEventListener("click", () => {
         state.rgbSelection = null;
         state.rgbRange = { rMin: 0, rMax: 255, gMin: 0, gMax: 255, bMin: 0, bMax: 255 };
+        state.hsbRange = { hMin: 0, hMax: 360, sMin: 0, sMax: 100, vMin: 0, vMax: 100 };
         renderColorOverview();
       });
     }
@@ -1963,10 +2049,17 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
     function syncRgbRangeFromSelection() {
       if (!state.rgbSelection) return;
       const rect = normalizedRgbRect();
-      state.rgbRange.rMin = Math.round(rect.xMin);
-      state.rgbRange.rMax = Math.round(rect.xMax);
-      state.rgbRange.gMin = Math.round(255 - rect.yMax);
-      state.rgbRange.gMax = Math.round(255 - rect.yMin);
+      if (state.colorSearchModel === "hsb") {
+        state.hsbRange.hMin = Math.round((rect.xMin / 255) * 360);
+        state.hsbRange.hMax = Math.round((rect.xMax / 255) * 360);
+        state.hsbRange.sMin = Math.round(100 - (rect.yMax / 255) * 100);
+        state.hsbRange.sMax = Math.round(100 - (rect.yMin / 255) * 100);
+      } else {
+        state.rgbRange.rMin = Math.round(rect.xMin);
+        state.rgbRange.rMax = Math.round(rect.xMax);
+        state.rgbRange.gMin = Math.round(255 - rect.yMax);
+        state.rgbRange.gMax = Math.round(255 - rect.yMin);
+      }
     }
 
     function selectionFromRgbRange() {
@@ -1975,6 +2068,15 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         x2: Math.max(Number(state.rgbRange.rMin), Number(state.rgbRange.rMax)),
         y1: 255 - Math.max(Number(state.rgbRange.gMin), Number(state.rgbRange.gMax)),
         y2: 255 - Math.min(Number(state.rgbRange.gMin), Number(state.rgbRange.gMax)),
+      };
+    }
+
+    function selectionFromHsbRange() {
+      return {
+        x1: Math.min(Number(state.hsbRange.hMin), Number(state.hsbRange.hMax)) / 360 * 255,
+        x2: Math.max(Number(state.hsbRange.hMin), Number(state.hsbRange.hMax)) / 360 * 255,
+        y1: 255 - Math.max(Number(state.hsbRange.sMin), Number(state.hsbRange.sMax)) / 100 * 255,
+        y2: 255 - Math.min(Number(state.hsbRange.sMin), Number(state.hsbRange.sMax)) / 100 * 255,
       };
     }
 
@@ -2001,6 +2103,11 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       return { x, y };
     }
 
+    function drawColorMap(canvas) {
+      if (state.colorSearchModel === "hsb") drawHsbMap(canvas);
+      else drawRgbMap(canvas);
+    }
+
     function drawRgbMap(canvas) {
       const size = 256;
       canvas.width = size;
@@ -2018,6 +2125,71 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         }
       }
       ctx.putImageData(image, 0, 0);
+    }
+
+    function drawHsbMap(canvas) {
+      const size = 256;
+      canvas.width = size;
+      canvas.height = size;
+      const ctx = canvas.getContext("2d");
+      const image = ctx.createImageData(size, size);
+      const brightness = (Number(state.hsbRange.vMin) + Number(state.hsbRange.vMax)) / 2;
+      for (let y = 0; y < size; y++) {
+        for (let x = 0; x < size; x++) {
+          const hue = (x / 255) * 360;
+          const saturation = 100 - (y / 255) * 100;
+          const rgb = hsbToRgb(hue, saturation, brightness);
+          const index = (y * size + x) * 4;
+          image.data[index] = rgb.r;
+          image.data[index + 1] = rgb.g;
+          image.data[index + 2] = rgb.b;
+          image.data[index + 3] = 255;
+        }
+      }
+      ctx.putImageData(image, 0, 0);
+    }
+
+    function rgbToHsb(rgb) {
+      const r = Number(rgb.r) / 255;
+      const g = Number(rgb.g) / 255;
+      const b = Number(rgb.b) / 255;
+      if (![r, g, b].every(Number.isFinite)) return null;
+      const max = Math.max(r, g, b);
+      const min = Math.min(r, g, b);
+      const delta = max - min;
+      let h = 0;
+      if (delta) {
+        if (max === r) h = 60 * (((g - b) / delta) % 6);
+        else if (max === g) h = 60 * ((b - r) / delta + 2);
+        else h = 60 * ((r - g) / delta + 4);
+      }
+      if (h < 0) h += 360;
+      return {
+        h: Math.round(h),
+        s: Math.round(max ? (delta / max) * 100 : 0),
+        v: Math.round(max * 100),
+      };
+    }
+
+    function hsbToRgb(h, s, v) {
+      const saturation = Math.max(0, Math.min(100, Number(s))) / 100;
+      const brightness = Math.max(0, Math.min(100, Number(v))) / 100;
+      const c = brightness * saturation;
+      const hp = (Number(h) % 360) / 60;
+      const x = c * (1 - Math.abs((hp % 2) - 1));
+      let r1 = 0, g1 = 0, b1 = 0;
+      if (hp >= 0 && hp < 1) [r1, g1, b1] = [c, x, 0];
+      else if (hp < 2) [r1, g1, b1] = [x, c, 0];
+      else if (hp < 3) [r1, g1, b1] = [0, c, x];
+      else if (hp < 4) [r1, g1, b1] = [0, x, c];
+      else if (hp < 5) [r1, g1, b1] = [x, 0, c];
+      else [r1, g1, b1] = [c, 0, x];
+      const m = brightness - c;
+      return {
+        r: Math.round((r1 + m) * 255),
+        g: Math.round((g1 + m) * 255),
+        b: Math.round((b1 + m) * 255),
+      };
     }
 
     function renderList() {
