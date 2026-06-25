@@ -4,7 +4,9 @@ import argparse
 import cgi
 import json
 import mimetypes
+import os
 import re
+import time
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
@@ -13,6 +15,7 @@ from urllib.request import Request, urlopen
 
 APP_DIR = Path(__file__).resolve().parent
 DEFAULT_DATA_DIR = APP_DIR / "data"
+NOTES_FILE = "browser_corrections.json"
 REQUIRED_FILES = [
     "productsModels.json",
     "productsAttributes.json",
@@ -53,6 +56,18 @@ def load_json_if_exists(path: Path, default: dict | None = None) -> dict:
     if not path.exists():
         return default or {}
     return load_json(path)
+
+
+def read_json_body(handler) -> dict:
+    length = int(handler.headers.get("Content-Length") or "0")
+    if length <= 0:
+        return {}
+    return json.loads(handler.rfile.read(length).decode("utf-8"))
+
+
+def write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def first_value(attr: dict, attr_def: dict | None = None) -> object:
@@ -506,6 +521,11 @@ def rows_as_model_table(rows: list[dict], model_columns: list[dict]) -> dict:
     }
 
 
+def compact_text(value: object, limit: int = 400) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    return text[:limit]
+
+
 class PimData:
     def __init__(self, data_dir: Path) -> None:
         self.data_dir = data_dir
@@ -539,6 +559,7 @@ class PimData:
         self.product_color_usage = self.build_product_color_usage()
 
     def summary(self) -> dict:
+        consistency = self.consistency_report()
         return {
             "data_dir": str(self.data_dir),
             "products": len(self.products),
@@ -547,7 +568,106 @@ class PimData:
             "color_groups": len(self.color_groups),
             "product_attributes": len(self.product_attr_defs),
             "system_attributes": len(self.element_attr_defs),
+            "consistency": consistency,
         }
+
+    def referenced_product_ids(self) -> set[int]:
+        referenced = set()
+        for element in self.elements:
+            attrs = latest_attrs(element)
+            available_rows = rows_for_parents(attrs, self.element_schema["available_parent_ids"], self.element_attr_defs)
+            for available in available_rows:
+                product_item = first_field_by_ids(available, self.element_schema["product_ids"])
+                raw = product_item.get("raw") if product_item else {}
+                product_id = raw.get("IntValue") if raw else None
+                if isinstance(product_id, int):
+                    referenced.add(product_id)
+        return referenced
+
+    def consistency_report(self) -> dict:
+        referenced_ids = {str(item) for item in self.referenced_product_ids()}
+        product_identities = self.product_identity_values()
+        unused_ids = []
+        if self.elements and referenced_ids:
+            for product_id, identities in product_identities.items():
+                if not identities.intersection(referenced_ids):
+                    unused_ids.append(product_id)
+        missing_ids = sorted(referenced_ids - set().union(*product_identities.values())) if product_identities else sorted(referenced_ids)
+        return {
+            "referenced_products": len(referenced_ids),
+            "products_without_building_element": len(unused_ids),
+            "building_element_product_ids_missing_in_products": len(missing_ids),
+            "products_without_building_element_sample": [
+                {"id": product_id, "name": product_name(self.product_index[product_id], self.product_attr_defs, self.product_name_attribute_ids)}
+                for product_id in unused_ids[:12]
+                if product_id in self.product_index
+            ],
+            "missing_product_id_sample": missing_ids[:12],
+        }
+
+    def product_identity_values(self) -> dict[int, set[str]]:
+        result = {}
+        for product in self.products:
+            product_id = int(product["Id"])
+            identities = {str(product_id)}
+            for attr in latest_attrs(product):
+                attr_id = int(attr.get("AttributeId") or 0)
+                attr_def = self.product_attr_defs.get(attr_id)
+                label = attr_label(attr_def, attr_id).lower()
+                is_identity = any(token in label for token in ("pim id", "sap id", "kod", "code", "nazwa", "name"))
+                if not is_identity and attr.get("ParentAttributeId") not in self.sot_parent_ids:
+                    continue
+                for key in ("varcharValue", "TextValue", "IntValue", "IntValue2", "NumberValue"):
+                    value = attr.get(key)
+                    if value not in (None, "", False):
+                        identities.add(str(value))
+            result[product_id] = identities
+        return result
+
+    def ai_catalog(self, mode: str = "", limit: int = 80) -> list[dict]:
+        mode = mode.lower().strip()
+        items = []
+        if mode in ("", "products"):
+            for product in self.products[:limit]:
+                detail = self.product_detail(int(product["Id"]))
+                values = [item.get("value") for item in detail.get("general") or []]
+                features = [f"{item.get('name')}: {item.get('value')}" for item in detail.get("features") or []]
+                items.append(
+                    {
+                        "type": "product",
+                        "id": detail["id"],
+                        "name": detail["name"],
+                        "text": compact_text(" | ".join(str(value) for value in [*values, *features] if value), 1200),
+                    }
+                )
+        if mode in ("", "systems"):
+            for element in self.elements[:limit]:
+                detail = self.system_detail(int(element["Id"]))
+                values = [item.get("value") for item in detail.get("general") or []]
+                layers = [
+                    f"{variant.get('name')}: " + ", ".join(layer.get("name") or "" for layer in variant.get("layers") or [])
+                    for variant in detail.get("system_variants") or []
+                ]
+                items.append(
+                    {
+                        "type": "building_element",
+                        "id": detail["id"],
+                        "name": detail["name"],
+                        "text": compact_text(" | ".join(str(value) for value in [*values, *layers] if value), 1200),
+                    }
+                )
+        if mode in ("", "colors"):
+            for group in self.color_groups[:limit]:
+                detail = self.color_group_detail(int(group["Id"]), compact=True)
+                items.append(
+                    {
+                        "type": "visual_attribute_group",
+                        "id": detail["id"],
+                        "name": detail["name"],
+                        "text": compact_text(f"{detail.get('description', '')} | items: {detail.get('count', 0)}", 600),
+                    }
+                )
+        return items
 
     def list_products(self, query: str = "", filters: dict[str, list[str]] | None = None) -> dict:
         query = query.lower().strip()
@@ -888,10 +1008,105 @@ class PimData:
         return variants
 
 
+class NotesStore:
+    def __init__(self, data_dir: Path) -> None:
+        self.path = data_dir / NOTES_FILE
+
+    def load(self) -> dict:
+        payload = load_json_if_exists(self.path, {"notes": []})
+        payload.setdefault("notes", [])
+        return payload
+
+    def list_notes(self) -> dict:
+        notes = sorted(self.load()["notes"], key=lambda item: item.get("updated_at", 0), reverse=True)
+        return {"items": notes}
+
+    def get_note(self, record_type: str, record_id: int) -> dict:
+        key = self.note_key(record_type, record_id)
+        for note in self.load()["notes"]:
+            if note.get("key") == key:
+                return note
+        return {
+            "key": key,
+            "record_type": record_type,
+            "record_id": record_id,
+            "requires_correction": False,
+            "comment": "",
+        }
+
+    def save_note(self, payload: dict) -> dict:
+        record_type = str(payload.get("record_type") or "")
+        record_id = int(payload.get("record_id") or 0)
+        key = self.note_key(record_type, record_id)
+        now = int(time.time())
+        note = {
+            "key": key,
+            "record_type": record_type,
+            "record_id": record_id,
+            "record_name": str(payload.get("record_name") or ""),
+            "requires_correction": bool(payload.get("requires_correction")),
+            "comment": str(payload.get("comment") or "").strip(),
+            "updated_at": now,
+        }
+        data = self.load()
+        notes = [item for item in data["notes"] if item.get("key") != key]
+        if note["requires_correction"] or note["comment"]:
+            notes.append(note)
+        data["notes"] = notes
+        write_json(self.path, data)
+        return note
+
+    @staticmethod
+    def note_key(record_type: str, record_id: int) -> str:
+        return f"{record_type}:{record_id}"
+
+
+class AiAgent:
+    def __init__(self) -> None:
+        self.base_url = (os.environ.get("DB_DATA_BROWSER_AI_URL") or os.environ.get("AI_AGENT_URL") or "").rstrip("/")
+        self.model = os.environ.get("DB_DATA_BROWSER_AI_MODEL") or os.environ.get("OLLAMA_MODEL") or "qwen2.5-coder:14b"
+
+    def ollama_root(self) -> str:
+        return re.sub(r"/api/(generate|tags)$", "", self.base_url)
+
+    def status(self) -> dict:
+        if not self.base_url:
+            return {"available": False, "reason": "DB_DATA_BROWSER_AI_URL is not configured", "model": self.model}
+        try:
+            url = self.base_url if self.base_url.endswith("/api/tags") else f"{self.ollama_root()}/api/tags"
+            request = Request(url, headers={"User-Agent": "DB-Data-Browser/1.0"})
+            with urlopen(request, timeout=2) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            models = [item.get("name") for item in payload.get("models", [])]
+            return {"available": True, "url": self.base_url, "model": self.model, "models": models}
+        except Exception as error:
+            return {"available": False, "url": self.base_url, "model": self.model, "reason": str(error)}
+
+    def search(self, question: str, catalog: list[dict]) -> dict:
+        status = self.status()
+        if not status.get("available"):
+            return {"available": False, "answer": "", "status": status}
+        prompt = (
+            "Jestes agentem wyszukiwania w DB Data Browser. Odpowiadaj po polsku. "
+            "Znajdz pasujace produkty, elementy budowlane lub visual attributes na podstawie pól, opisów, cech i filtrów. "
+            "Zwracaj konkretne nazwy, typ rekordu i ID. Jesli nie ma pewnosci, powiedz czego brakuje.\n\n"
+            f"Pytanie użytkownika: {question}\n\n"
+            f"Dane do przeszukania:\n{json.dumps(catalog, ensure_ascii=False)}"
+        )
+        endpoint = self.base_url if self.base_url.endswith("/api/generate") else f"{self.ollama_root()}/api/generate"
+        body = json.dumps({"model": self.model, "prompt": prompt, "stream": False}, ensure_ascii=False).encode("utf-8")
+        request = Request(endpoint, data=body, headers={"Content-Type": "application/json", "User-Agent": "DB-Data-Browser/1.0"})
+        with urlopen(request, timeout=45) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        return {"available": True, "answer": payload.get("response") or payload.get("answer") or str(payload), "status": status}
+
+
 class DataStore:
     def __init__(self, data_dir: Path) -> None:
         self.data_dir = data_dir
         self.data: PimData | None = None
+        self.notes = NotesStore(data_dir)
+        self.ai = AiAgent()
         self.reload()
 
     def status(self) -> dict:
@@ -1041,6 +1256,18 @@ def make_store_handler(store: DataStore):
             if parsed.path == "/api/source/clear":
                 self.send_json(store.clear())
                 return
+            if parsed.path == "/api/notes":
+                self.send_json(store.notes.save_note(read_json_body(self)))
+                return
+            if parsed.path == "/api/ai/search":
+                payload = read_json_body(self)
+                question = str(payload.get("question") or "")
+                mode = str(payload.get("mode") or "")
+                try:
+                    self.send_json(store.ai.search(question, self.ready_data().ai_catalog(mode=mode)))
+                except Exception as error:
+                    self.send_json({"available": False, "answer": "", "error": str(error)}, status=502)
+                return
             self.send_json({"error": "Not found"}, status=404)
 
         def handle_api(self, parsed):
@@ -1052,6 +1279,13 @@ def make_store_handler(store: DataStore):
                     return
                 elif parsed.path == "/api/source/status":
                     payload = store.status()
+                elif parsed.path == "/api/ai/status":
+                    payload = store.ai.status()
+                elif parsed.path == "/api/notes":
+                    payload = store.notes.list_notes()
+                elif parsed.path.startswith("/api/notes/"):
+                    _, record_type, record_id = parsed.path.rsplit("/", 2)
+                    payload = store.notes.get_note(unquote(record_type), int(unquote(record_id)))
                 elif parsed.path == "/api/summary":
                     if not store.data:
                         self.send_json({"error": "Data source is not ready", **store.status()}, status=409)

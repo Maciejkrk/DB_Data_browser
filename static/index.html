@@ -58,7 +58,7 @@
     }
     .tabs {
       display: grid;
-      grid-template-columns: repeat(3, 1fr);
+      grid-template-columns: repeat(4, 1fr);
       border: 1px solid var(--line);
       border-radius: 6px;
       overflow: hidden;
@@ -136,6 +136,47 @@
       border-radius: 4px;
       background: var(--ink-soft);
       color: var(--text);
+    }
+    .ai-panel, .correction-panel, .startup-warning {
+      display: grid;
+      gap: 8px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+    }
+    .startup-warning {
+      margin-bottom: 12px;
+      border-color: #fed7aa;
+      background: #fff7ed;
+      color: #7c2d12;
+    }
+    .ai-panel button, .correction-panel button {
+      width: auto;
+      justify-self: start;
+      padding: 8px 11px;
+      border-radius: 4px;
+      background: var(--accent);
+      color: #fff;
+    }
+    .ai-panel textarea, .correction-panel textarea {
+      width: 100%;
+      min-height: 74px;
+      padding: 9px 10px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      font: inherit;
+      resize: vertical;
+    }
+    .correction-panel label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 800;
+    }
+    .correction-panel input {
+      width: auto;
+      margin: 0;
     }
     .item {
       width: 100%;
@@ -550,9 +591,16 @@
           <button id="productsTab" class="active" type="button">Products</button>
           <button id="systemsTab" type="button">Building Elements</button>
           <button id="colorsTab" type="button">Visual Attributes</button>
+          <button id="correctionsTab" type="button">Corrections</button>
         </div>
         <input id="searchInput" type="search" placeholder="Search by name, category, type...">
         <select id="categorySelect" hidden></select>
+        <div id="aiPanel" class="ai-panel" hidden>
+          <strong>AI search</strong>
+          <textarea id="aiQuestion" placeholder="Ask about products, building elements, colors, descriptions or features..."></textarea>
+          <button id="aiSearchBtn" type="button">Search with AI</button>
+          <div id="aiStatus" class="muted"></div>
+        </div>
       </div>
       <div id="list" class="list"></div>
     </aside>
@@ -572,7 +620,7 @@
     </div>
   </div>
   <script>
-    const state = { mode: "products", items: [], selectedId: null, filters: { products: {}, systems: {}, colors: {} }, filterDefs: [], requestId: 0 };
+    const state = { mode: "products", items: [], selectedId: null, filters: { products: {}, systems: {}, colors: {}, corrections: {} }, filterDefs: [], requestId: 0, ai: { available: false }, summary: null };
     const REQUIRED_FILES = [
       "productsModels.json",
       "productsAttributes.json",
@@ -599,13 +647,26 @@
       return data;
     }
 
+    async function apiPost(path, payload) {
+      const response = await fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload || {}),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Request error");
+      return data;
+    }
+
     function setMode(mode) {
       state.mode = mode;
       state.selectedId = null;
       $("productsTab").classList.toggle("active", mode === "products");
       $("systemsTab").classList.toggle("active", mode === "systems");
       $("colorsTab").classList.toggle("active", mode === "colors");
+      $("correctionsTab").classList.toggle("active", mode === "corrections");
       $("categorySelect").hidden = mode !== "colors";
+      $("searchInput").hidden = mode === "corrections";
       $("searchInput").value = "";
       renderFilterOptions();
       loadList();
@@ -689,12 +750,52 @@
 
     async function loadSummary() {
       const summary = await api("/api/summary");
+      state.summary = summary;
       $("summary").innerHTML = `
         <span class="pill">Products: ${esc(summary.products)}</span>
         <span class="pill">Building elements: ${esc(summary.systems)}</span>
         <span class="pill">Visual attributes: ${esc(summary.colors || 0)}</span>
+        ${summary.consistency?.products_without_building_element ? `<span class="pill warn">Unlinked products: ${esc(summary.consistency.products_without_building_element)}</span>` : ""}
         <span class="pill">Source: ${esc(summary.data_dir)}</span>
       `;
+    }
+
+    async function loadAiStatus() {
+      const status = await api("/api/ai/status");
+      state.ai = status;
+      $("aiPanel").hidden = !status.available;
+      $("aiStatus").textContent = status.available
+        ? `Connected: ${status.model}${status.url ? ` at ${status.url}` : ""}`
+        : "";
+    }
+
+    async function runAiSearch() {
+      const question = $("aiQuestion").value.trim();
+      if (!question) {
+        $("aiStatus").textContent = "Enter a question first.";
+        return;
+      }
+      $("aiStatus").textContent = "Searching with AI...";
+      try {
+        const result = await apiPost("/api/ai/search", { question, mode: state.mode === "corrections" ? "" : state.mode });
+        $("detail").innerHTML = `
+          <div class="detail-head">
+            <h2>AI search result</h2>
+            <div class="summary"><span class="pill">${esc(result.status?.model || state.ai.model || "AI")}</span></div>
+          </div>
+          <div class="field">
+            <div class="field-label">Question</div>
+            <div class="field-value">${esc(question)}</div>
+          </div>
+          <div class="field">
+            <div class="field-label">Answer</div>
+            <div class="field-value">${esc(result.answer || "No answer.")}</div>
+          </div>
+        `;
+        $("aiStatus").textContent = "Done.";
+      } catch (error) {
+        $("aiStatus").textContent = error.message;
+      }
     }
 
     async function loadList() {
@@ -712,7 +813,9 @@
         ? `/api/products${suffix}`
         : state.mode === "colors"
           ? `/api/color-groups`
-          : `/api/systems${suffix}`;
+          : state.mode === "corrections"
+            ? `/api/notes`
+            : `/api/systems${suffix}`;
       const data = await api(url);
       if (requestId !== state.requestId) return;
       state.items = state.mode === "colors"
@@ -720,7 +823,10 @@
         : data.items || [];
       state.filterDefs = data.filters || [];
       renderFilterOptions();
-      if (state.mode === "colors") {
+      if (state.mode === "corrections") {
+        renderNotesList();
+        renderNotesOverview();
+      } else if (state.mode === "colors") {
         renderList();
         $("detail").innerHTML = `<div class="muted">Select a visual attribute group from the list on the left.</div>`;
       } else {
@@ -805,6 +911,7 @@
     function renderResults() {
       const label = state.mode === "products" ? "products" : "building elements";
       $("detail").innerHTML = `
+        ${startupWarning()}
         <div class="results-head">
           <h2>${state.items.length} ${label}</h2>
         </div>
@@ -819,6 +926,90 @@
       `;
       for (const button of document.querySelectorAll("[data-result-id]")) {
         button.addEventListener("click", () => loadDetail(Number(button.dataset.resultId)));
+      }
+    }
+
+    function startupWarning() {
+      const consistency = state.summary?.consistency || {};
+      if (!consistency.products_without_building_element && !consistency.building_element_product_ids_missing_in_products) return "";
+      const sample = (consistency.products_without_building_element_sample || [])
+        .map((item) => `${item.name} (ID ${item.id})`)
+        .join(", ");
+      const missing = (consistency.missing_product_id_sample || []).join(", ");
+      return `<div class="startup-warning">
+        ${consistency.products_without_building_element ? `<strong>${esc(consistency.products_without_building_element)} products are not used in building elements.</strong>` : ""}
+        ${sample ? `<div>Examples: ${esc(sample)}</div>` : ""}
+        ${consistency.building_element_product_ids_missing_in_products ? `<div><strong>${esc(consistency.building_element_product_ids_missing_in_products)} product IDs used in building elements do not exist in Products.</strong> ${esc(missing)}</div>` : ""}
+      </div>`;
+    }
+
+    function renderNotesList() {
+      $("list").innerHTML = state.items.map((item) => `
+        <button class="item${item.key === state.selectedId ? " active" : ""}" type="button" data-note-key="${esc(item.key)}">
+          <span class="item-title">${esc(item.record_name || item.key)}</span>
+          <span class="item-meta">
+            <span>${esc(item.record_type)}</span>
+            <span>ID: ${esc(item.record_id)}</span>
+            ${item.requires_correction ? "<span>requires correction</span>" : ""}
+          </span>
+        </button>
+      `).join("") || `<div class="item"><span class="muted">No corrections saved.</span></div>`;
+      for (const button of document.querySelectorAll("[data-note-key]")) {
+        button.addEventListener("click", () => openNote(button.dataset.noteKey));
+      }
+    }
+
+    function renderNotesOverview() {
+      $("detail").innerHTML = `
+        <div class="detail-head">
+          <h2>Corrections</h2>
+          <div class="summary"><span class="pill">${esc(state.items.length)} saved notes</span></div>
+        </div>
+        <div class="data-table">
+          <table>
+            <thead><tr><th>Record</th><th>Type</th><th>Needs correction</th><th>Comment</th></tr></thead>
+            <tbody>${state.items.map((item) => `
+              <tr>
+                <td><button type="button" data-open-note="${esc(item.key)}">${esc(item.record_name || item.key)}</button><br><span class="muted">ID: ${esc(item.record_id)}</span></td>
+                <td>${esc(item.record_type)}</td>
+                <td>${item.requires_correction ? "Yes" : "No"}</td>
+                <td>${esc(item.comment || "")}</td>
+              </tr>
+            `).join("") || `<tr><td colspan="4" class="muted">No corrections saved.</td></tr>`}</tbody>
+          </table>
+        </div>
+      `;
+      for (const button of document.querySelectorAll("[data-open-note]")) {
+        button.addEventListener("click", () => openNote(button.dataset.openNote));
+      }
+    }
+
+    function openNote(key) {
+      state.selectedId = key;
+      renderNotesList();
+      const note = state.items.find((item) => item.key === key);
+      if (!note) return;
+      $("detail").innerHTML = `
+        <div class="detail-head">
+          <h2>${esc(note.record_name || note.key)}</h2>
+          <div class="summary">
+            <span class="pill">${esc(note.record_type)}</span>
+            <span class="pill">ID: ${esc(note.record_id)}</span>
+            ${note.requires_correction ? `<span class="pill warn">Requires correction</span>` : ""}
+          </div>
+        </div>
+        <div class="field-value">${esc(note.comment || "")}</div>
+        <div class="preview-actions">
+          <button type="button" data-open-record="${esc(note.record_type)}:${esc(note.record_id)}">Open record</button>
+        </div>
+      `;
+      const button = document.querySelector("[data-open-record]");
+      if (button) {
+        button.addEventListener("click", () => {
+          const [type, id] = button.dataset.openRecord.split(":");
+          setMode(type === "system" ? "systems" : type === "color" || type === "color_group" ? "colors" : "products");
+          setTimeout(() => type === "color_group" ? loadColorGroup(Number(id)) : loadDetail(Number(id)), 150);
+        });
       }
     }
 
@@ -848,6 +1039,7 @@
       const data = await api(`/api/color-groups/${id}`);
       $("detail").innerHTML = renderColorGroup(data);
       attachColorTileEvents();
+      attachCorrectionPanel(data, "color_group");
     }
 
     async function loadDetail(id) {
@@ -860,6 +1052,7 @@
       if (requestId !== state.requestId) return;
       $("detail").innerHTML = state.mode === "products" ? renderProduct(data) : state.mode === "colors" ? renderColor(data) : renderSystem(data);
       attachColorTileEvents();
+      attachCorrectionPanel(data, state.mode === "products" ? "product" : state.mode === "systems" ? "system" : "color");
     }
 
     function renderProduct(data) {
@@ -873,6 +1066,7 @@
             ${(data.categories || []).map((item) => `<span class="pill">${esc(item)}</span>`).join("")}
           </div>
         </div>
+        ${correctionPanel("product", data)}
         ${mediaGrid(data.media)}
         ${productColorLinks(data.color_links)}
         ${featureTable(data.features)}
@@ -899,6 +1093,7 @@
             ${data.bim_type ? `<span class="pill">BIM: ${esc(data.bim_type)}</span>` : ""}
           </div>
         </div>
+        ${correctionPanel("system", data)}
         ${mediaGrid(data.media)}
         ${fieldGrid(data.general)}
         ${systemVariants(data.system_variants)}
@@ -916,6 +1111,7 @@
             ${data.rgb ? `<span class="pill">RGB ${esc(data.rgb.r)}, ${esc(data.rgb.g)}, ${esc(data.rgb.b)}</span>` : ""}
           </div>
         </div>
+        ${correctionPanel("color", data)}
         ${colorPreview(data)}
         ${materialPreviewButton(data)}
         ${colorParameterTable(data)}
@@ -930,6 +1126,34 @@
       return `<div class="preview-actions">
         <button type="button" data-preview-3d="${esc(data.id)}">3D preview</button>
       </div>`;
+    }
+
+    function correctionPanel(recordType, data) {
+      return `<div class="correction-panel" data-correction-panel data-record-type="${esc(recordType)}" data-record-id="${esc(data.id)}" data-record-name="${esc(data.name)}">
+        <label><input type="checkbox" data-correction-required> Requires correction</label>
+        <textarea data-correction-comment placeholder="Describe what should be corrected for this record..."></textarea>
+        <button type="button" data-save-correction>Save note</button>
+        <div class="muted" data-correction-status></div>
+      </div>`;
+    }
+
+    async function attachCorrectionPanel(data, recordType, root = document) {
+      const panel = root.querySelector("[data-correction-panel]");
+      if (!panel) return;
+      const note = await api(`/api/notes/${recordType}/${data.id}`);
+      panel.querySelector("[data-correction-required]").checked = Boolean(note.requires_correction);
+      panel.querySelector("[data-correction-comment]").value = note.comment || "";
+      panel.querySelector("[data-save-correction]").addEventListener("click", async () => {
+        const payload = {
+          record_type: recordType,
+          record_id: data.id,
+          record_name: data.name,
+          requires_correction: panel.querySelector("[data-correction-required]").checked,
+          comment: panel.querySelector("[data-correction-comment]").value,
+        };
+        const saved = await apiPost("/api/notes", payload);
+        panel.querySelector("[data-correction-status]").textContent = saved.comment || saved.requires_correction ? "Saved." : "Note cleared.";
+      });
     }
 
     function colorParameterTable(data) {
@@ -973,6 +1197,7 @@
           </div>
           ${data.description ? `<div class="muted">${esc(data.description)}</div>` : ""}
         </div>
+        ${correctionPanel("color_group", data)}
         ${mediaGrid(data.media)}
         ${groupRelations(data)}
         ${renderColorGallery(colors)}
@@ -1014,6 +1239,7 @@
       $("modalBody").innerHTML = renderColor(data);
       $("modalBackdrop").hidden = false;
       attachPreviewEvents(data);
+      attachCorrectionPanel(data, "color", $("modalBody"));
     }
 
     function attachPreviewEvents(data) {
@@ -1517,7 +1743,9 @@
     $("productsTab").addEventListener("click", () => setMode("products"));
     $("systemsTab").addEventListener("click", () => setMode("systems"));
     $("colorsTab").addEventListener("click", () => setMode("colors"));
+    $("correctionsTab").addEventListener("click", () => setMode("corrections"));
     $("changeSourceBtn").addEventListener("click", () => changeSourceFiles());
+    $("aiSearchBtn").addEventListener("click", () => runAiSearch());
     $("modalCloseBtn").addEventListener("click", () => closeModal());
     $("modalBackdrop").addEventListener("click", (event) => {
       if (event.target === $("modalBackdrop")) closeModal();
@@ -1535,6 +1763,7 @@
       const ready = await loadSourceStatus();
       if (!ready) return;
       await loadSummary();
+      await loadAiStatus();
       await loadList();
     }
 
