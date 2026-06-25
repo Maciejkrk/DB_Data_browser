@@ -38,6 +38,25 @@
     }
     h1 { margin: 0; font-size: 20px; }
     h2 { margin: 0 0 10px; font-size: 16px; }
+    .header-main {
+      display: grid;
+      gap: 6px;
+      min-width: 0;
+    }
+    .header-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+    .project-summary {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 12px;
+    }
     main {
       display: grid;
       grid-template-columns: minmax(320px, 430px) 1fr;
@@ -569,6 +588,29 @@
       color: #fff;
     }
     .modal-body { padding: 14px; }
+    .project-form {
+      display: grid;
+      gap: 10px;
+    }
+    .project-form label {
+      display: grid;
+      gap: 5px;
+      font-weight: 800;
+    }
+    .project-form textarea {
+      width: 100%;
+      min-height: 84px;
+      padding: 9px 10px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      font: inherit;
+      resize: vertical;
+    }
+    .progress-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 8px;
+    }
     .preview-actions {
       display: flex;
       gap: 8px;
@@ -645,9 +687,15 @@
 </head>
 <body>
   <header>
-    <h1>DB Data Browser</h1>
+    <div class="header-main">
+      <h1>DB Data Browser</h1>
+      <div id="projectSummary" class="project-summary"></div>
+    </div>
     <div id="summary" class="summary">Loading data...</div>
-    <button id="changeSourceBtn" class="source-button" type="button">Change source files</button>
+    <div class="header-actions">
+      <button id="projectBtn" class="source-button" type="button">Review project</button>
+      <button id="changeSourceBtn" class="source-button" type="button">Change source files</button>
+    </div>
   </header>
   <main>
     <aside>
@@ -697,6 +745,7 @@
       requestId: 0,
       ai: { available: false },
       summary: null,
+      project: null,
       navStack: [],
     };
     const REQUIRED_FILES = [
@@ -916,6 +965,112 @@
         ${summary.consistency?.products_without_building_element ? `<span class="pill warn">Unlinked products: ${esc(summary.consistency.products_without_building_element)}</span>` : ""}
         <span class="pill">Source: ${esc(summary.data_dir)}</span>
       `;
+    }
+
+    async function loadProject() {
+      const project = await api("/api/project");
+      state.project = project;
+      renderProjectHeader();
+      return project;
+    }
+
+    function renderProjectHeader() {
+      const project = state.project?.project;
+      const progress = state.project?.progress;
+      if (!project || !progress) {
+        $("projectSummary").innerHTML = "";
+        return;
+      }
+      $("projectSummary").innerHTML = `
+        <span>${esc(project.name)}</span>
+        ${project.client ? `<span>Client: ${esc(project.client)}</span>` : ""}
+        <span>${esc(progress.total_accepted)} / ${esc(progress.total_records)} accepted (${esc(progress.acceptance_percent)}%)</span>
+        ${progress.open_corrections_total ? `<span class="warn">${esc(progress.open_corrections_total)} open corrections</span>` : ""}
+      `;
+    }
+
+    function openProjectModal() {
+      const project = state.project?.project || {};
+      const progress = state.project?.progress || {};
+      const totals = progress.totals || {};
+      const accepted = progress.accepted || {};
+      const open = progress.open_corrections || {};
+      $("modalTitle").textContent = "Review project";
+      $("modalBody").innerHTML = `
+        <div class="project-form">
+          <label>Project name
+            <input id="projectNameInput" value="${esc(project.name || "")}">
+          </label>
+          <label>Client
+            <input id="projectClientInput" value="${esc(project.client || "")}">
+          </label>
+          <label>Reviewer
+            <input id="projectReviewerInput" value="${esc(project.reviewer || "")}">
+          </label>
+          <label>Status
+            <select id="projectStatusInput">
+              ${["draft", "in_review", "client_review", "completed", "on_hold"].map((status) => `<option value="${status}"${status === project.status ? " selected" : ""}>${esc(status.replaceAll("_", " "))}</option>`).join("")}
+            </select>
+          </label>
+          <label>Due date
+            <input id="projectDueDateInput" type="date" value="${esc(project.due_date || "")}">
+          </label>
+          <label>Description
+            <textarea id="projectDescriptionInput">${esc(project.description || "")}</textarea>
+          </label>
+          <div class="progress-grid">
+            ${projectProgressCard("Products", accepted.product, totals.product, open.product)}
+            ${projectProgressCard("Building Elements", accepted.system, totals.system, open.system)}
+            ${projectProgressCard("Visual Attributes", accepted.visual_attribute, totals.visual_attribute, open.visual_attribute)}
+          </div>
+          <div class="field">
+            <div class="field-label">Server storage</div>
+            <div class="field-value">${esc(state.project?.storage?.project_file || "")}
+${esc(state.project?.storage?.notes_file || "")}</div>
+          </div>
+          <div class="preview-actions">
+            <button type="button" data-save-project>Save project</button>
+            <button type="button" data-export-project>Export project package</button>
+          </div>
+          <div id="projectSaveStatus" class="muted"></div>
+        </div>
+      `;
+      $("modalBackdrop").hidden = false;
+      document.querySelector("[data-save-project]").addEventListener("click", saveProject);
+      document.querySelector("[data-export-project]").addEventListener("click", () => {
+        window.location.href = "/api/project/export";
+      });
+    }
+
+    function projectProgressCard(label, accepted = 0, total = 0, openCorrections = 0) {
+      const percent = total ? Math.round((Number(accepted || 0) / Number(total || 0)) * 100) : 0;
+      return `<div class="field">
+        <div class="field-label">${esc(label)}</div>
+        <div class="field-value">${esc(accepted || 0)} / ${esc(total || 0)} accepted (${esc(percent)}%)${openCorrections ? `\n${esc(openCorrections)} open corrections` : ""}</div>
+      </div>`;
+    }
+
+    async function saveProject() {
+      const payload = {
+        name: $("projectNameInput").value,
+        client: $("projectClientInput").value,
+        reviewer: $("projectReviewerInput").value,
+        status: $("projectStatusInput").value,
+        due_date: $("projectDueDateInput").value,
+        description: $("projectDescriptionInput").value,
+      };
+      $("projectSaveStatus").textContent = "Saving project...";
+      state.project = await apiPost("/api/project", payload);
+      renderProjectHeader();
+      $("projectSaveStatus").textContent = "Project saved.";
+    }
+
+    async function refreshProjectProgress() {
+      try {
+        await loadProject();
+      } catch (error) {
+        console.warn("Project progress could not be refreshed", error);
+      }
     }
 
     async function loadAiStatus() {
@@ -1155,6 +1310,7 @@
       await apiPost("/api/records/accept", { record_type: recordTypeForMode(), accepted, records });
       state.selectedRecords = new Set();
       await refreshNotesIndex();
+      await refreshProjectProgress();
       if (state.mode === "colors") renderList();
       else renderResults();
     }
@@ -1275,6 +1431,7 @@
       if (resolvedButton) {
         resolvedButton.addEventListener("click", async () => {
           await apiPost("/api/notes", { ...note, resolved: !note.resolved });
+          await refreshProjectProgress();
           await loadList();
         });
       }
@@ -1289,6 +1446,7 @@
       const result = await apiPost("/api/notes/import", payload);
       $("notesImportStatus").textContent = `Imported ${result.imported} notes. Total: ${result.total}.`;
       input.value = "";
+      await refreshProjectProgress();
       await loadList();
     }
 
@@ -1471,6 +1629,8 @@
         renderAttachments(panel, saved.attachments || []);
         panel.querySelector("[data-correction-attachment]").value = "";
         panel.querySelector("[data-correction-status]").textContent = saved.comment || saved.requires_correction ? "Saved." : "Note cleared.";
+        await refreshNotesIndex();
+        await refreshProjectProgress();
       });
     }
 
@@ -2095,6 +2255,7 @@
     $("systemsTab").addEventListener("click", () => setMode("systems"));
     $("colorsTab").addEventListener("click", () => setMode("colors"));
     $("correctionsTab").addEventListener("click", () => setMode("corrections"));
+    $("projectBtn").addEventListener("click", () => openProjectModal());
     $("changeSourceBtn").addEventListener("click", () => changeSourceFiles());
     $("aiSearchBtn").addEventListener("click", () => runAiSearch());
     $("modalCloseBtn").addEventListener("click", () => closeModal());
@@ -2114,6 +2275,7 @@
       const ready = await loadSourceStatus();
       if (!ready) return;
       await loadSummary();
+      await loadProject();
       await loadAiStatus();
       await loadList();
     }

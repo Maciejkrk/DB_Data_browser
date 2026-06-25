@@ -19,6 +19,7 @@ from urllib.request import Request, urlopen
 APP_DIR = Path(__file__).resolve().parent
 DEFAULT_DATA_DIR = APP_DIR / "data"
 NOTES_FILE = "browser_corrections.json"
+PROJECT_FILE = "browser_review_project.json"
 ATTACHMENTS_DIR = "correction_attachments"
 REQUIRED_FILES = [
     "productsModels.json",
@@ -1276,6 +1277,108 @@ class NotesStore:
         return f"{record_type}:{record_id}"
 
 
+class ReviewProjectStore:
+    def __init__(self, data_dir: Path, notes: NotesStore) -> None:
+        self.path = data_dir / PROJECT_FILE
+        self.notes = notes
+
+    def load(self) -> dict:
+        payload = load_json_if_exists(self.path, {})
+        created_at = int(payload.get("created_at") or time.time())
+        return {
+            "name": str(payload.get("name") or "DB Data Browser review"),
+            "client": str(payload.get("client") or ""),
+            "reviewer": str(payload.get("reviewer") or ""),
+            "status": str(payload.get("status") or "in_review"),
+            "description": str(payload.get("description") or ""),
+            "due_date": str(payload.get("due_date") or ""),
+            "created_at": created_at,
+            "updated_at": int(payload.get("updated_at") or created_at),
+        }
+
+    def save(self, payload: dict) -> dict:
+        current = self.load()
+        now = int(time.time())
+        allowed_statuses = {"draft", "in_review", "client_review", "completed", "on_hold"}
+        status = str(payload.get("status") or current["status"] or "in_review")
+        if status not in allowed_statuses:
+            status = "in_review"
+        project = {
+            **current,
+            "name": str(payload.get("name") or current["name"]).strip() or "DB Data Browser review",
+            "client": str(payload.get("client") if payload.get("client") is not None else current["client"]).strip(),
+            "reviewer": str(payload.get("reviewer") if payload.get("reviewer") is not None else current["reviewer"]).strip(),
+            "status": status,
+            "description": str(payload.get("description") if payload.get("description") is not None else current["description"]).strip(),
+            "due_date": str(payload.get("due_date") if payload.get("due_date") is not None else current["due_date"]).strip(),
+            "updated_at": now,
+        }
+        write_json(self.path, project)
+        return project
+
+    def summary(self, data: PimData | None, source_status: dict) -> dict:
+        notes = self.notes.list_notes()["items"]
+        return {
+            "project": self.load(),
+            "progress": project_progress(notes, data),
+            "source": source_status,
+            "storage": {
+                "project_file": str(self.path),
+                "notes_file": str(self.notes.path),
+                "attachments_dir": str(self.notes.attachments_dir),
+            },
+        }
+
+    def export_bundle(self, data: PimData | None, source_status: dict) -> dict:
+        notes = self.notes.list_notes()["items"]
+        return {
+            "project": self.load(),
+            "progress": project_progress(notes, data),
+            "notes": notes,
+            "source": source_status,
+            "exported_at": int(time.time()),
+        }
+
+
+def project_progress(notes: list[dict], data: PimData | None) -> dict:
+    totals = {
+        "product": len(data.products) if data else 0,
+        "system": len(data.elements) if data else 0,
+        "visual_attribute": (len(data.colors) + len(data.color_groups)) if data else 0,
+    }
+    accepted = {key: 0 for key in totals}
+    open_corrections = {key: 0 for key in totals}
+    resolved_corrections = {key: 0 for key in totals}
+    notes_count = {key: 0 for key in totals}
+    for note in notes:
+        raw_type = str(note.get("record_type") or "")
+        record_type = "visual_attribute" if raw_type in {"color", "color_group"} else raw_type
+        if record_type not in totals:
+            continue
+        notes_count[record_type] += 1
+        if note.get("accepted"):
+            accepted[record_type] += 1
+        if note.get("requires_correction"):
+            if note.get("resolved"):
+                resolved_corrections[record_type] += 1
+            else:
+                open_corrections[record_type] += 1
+    total_records = sum(totals.values())
+    total_accepted = sum(accepted.values())
+    return {
+        "totals": totals,
+        "accepted": accepted,
+        "open_corrections": open_corrections,
+        "resolved_corrections": resolved_corrections,
+        "notes": notes_count,
+        "total_records": total_records,
+        "total_accepted": total_accepted,
+        "acceptance_percent": round((total_accepted / total_records) * 100, 1) if total_records else 0,
+        "open_corrections_total": sum(open_corrections.values()),
+        "resolved_corrections_total": sum(resolved_corrections.values()),
+    }
+
+
 class AiAgent:
     def __init__(self) -> None:
         self.base_url = (os.environ.get("DB_DATA_BROWSER_AI_URL") or os.environ.get("AI_AGENT_URL") or "").rstrip("/")
@@ -1325,6 +1428,7 @@ class DataStore:
         self.data_dir = data_dir
         self.data: PimData | None = None
         self.notes = NotesStore(data_dir)
+        self.project = ReviewProjectStore(data_dir, self.notes)
         self.ai = AiAgent()
         self.reload()
 
@@ -1487,6 +1591,10 @@ def make_store_handler(store: DataStore):
             if parsed.path == "/api/notes":
                 self.send_json(store.notes.save_note(read_json_body(self)))
                 return
+            if parsed.path == "/api/project":
+                store.project.save(read_json_body(self))
+                self.send_json(store.project.summary(store.data, store.status()))
+                return
             if parsed.path == "/api/notes/import":
                 try:
                     self.send_json(store.notes.import_notes(read_json_body(self)))
@@ -1518,6 +1626,11 @@ def make_store_handler(store: DataStore):
                     payload = store.status()
                 elif parsed.path == "/api/ai/status":
                     payload = store.ai.status()
+                elif parsed.path == "/api/project":
+                    payload = store.project.summary(store.data, store.status())
+                elif parsed.path == "/api/project/export":
+                    self.send_download(store.project.export_bundle(store.data, store.status()), "db_data_browser_review_project.json")
+                    return
                 elif parsed.path == "/api/notes":
                     payload = store.notes.list_notes()
                 elif parsed.path == "/api/notes/export":
