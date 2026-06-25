@@ -712,10 +712,7 @@ def ai_record_target(item_type: str) -> dict:
 
 def related_ai_records(question: str, answer: str, catalog: list[dict], limit: int = 12) -> list[dict]:
     haystack = f"{question} {answer}".lower().replace("_", " ")
-    tokens = [
-        token for token in re.findall(r"[\w.-]+", question.lower().replace("_", " "))
-        if len(token) > 2
-    ]
+    tokens = ai_query_tokens(question)
     scored = []
     seen = set()
     for index, item in enumerate(catalog):
@@ -732,7 +729,7 @@ def related_ai_records(question: str, answer: str, catalog: list[dict], limit: i
             score += 8
         if str(item_id).lower() in haystack:
             score += 6
-        score += sum(1 for token in tokens if token in searchable)
+        score += sum(1 for token in tokens if text_has_token(searchable, token))
         if score <= 0 and index < 5:
             score = 1
         if score <= 0:
@@ -770,6 +767,53 @@ def matches_ai_query(text: str, query: str) -> bool:
     if not tokens:
         return False
     return any(token in normalized for token in tokens)
+
+
+def ai_query_tokens(query: str) -> list[str]:
+    groups = ai_query_token_groups(query)
+    tokens = []
+    for group in groups:
+        for token in group:
+            if token not in tokens:
+                tokens.append(token)
+    return tokens
+
+
+def ai_query_token_groups(query: str) -> list[list[str]]:
+    stop_words = {
+        "kolor", "kolory", "kolorow", "kolorach", "cecha", "cechy", "visual", "attributes", "attribute",
+        "znajdz", "pokaz", "odcien", "odcieniu", "odcienie", "barwa", "barwie", "zakres", "ktore",
+    }
+    aliases = {
+        "czerwony": ["red", "czerwony", "czerwone", "czerwona", "czerwonym", "czerwonymi", "czerwieni"],
+        "niebieski": ["blue", "niebieski", "niebieskie", "niebieska", "niebieskim", "niebieskimi"],
+        "zielony": ["green", "zielony", "zielone", "zielona", "zielonym", "zielonymi"],
+        "zolty": ["yellow", "zolty", "zolte", "zolta", "zoltym", "zoltymi"],
+        "pomaranczowy": ["orange", "pomaranczowy", "pomaranczowe", "pomaranczowa", "pomaranczowym"],
+        "fioletowy": ["purple", "violet", "fioletowy", "fioletowe", "fioletowa", "fioletowym"],
+        "szary": ["gray", "grey", "szary", "szare", "szara", "szarym", "szarymi"],
+        "jasny": ["light", "jasny", "jasne", "jasna", "jasnym", "jasnymi"],
+        "ciemny": ["dark", "ciemny", "ciemne", "ciemna", "ciemnym", "ciemnymi"],
+    }
+    reverse_aliases = {variant: values for values in aliases.values() for variant in values}
+    groups = []
+    for token in re.findall(r"[\w.-]+", query.lower().replace("_", " ")):
+        if len(token) <= 2 or token in stop_words:
+            continue
+        groups.append(reverse_aliases.get(token, [token]))
+    return groups
+
+
+def matches_ai_query(text: str, query: str) -> bool:
+    normalized = text.lower().replace("_", " ")
+    groups = ai_query_token_groups(query)
+    if not groups:
+        return False
+    return all(any(text_has_token(normalized, token) for token in group) for group in groups)
+
+
+def text_has_token(text: str, token: str) -> bool:
+    return re.search(rf"(^|[^\w.-]){re.escape(token)}($|[^\w.-])", text) is not None
 
 
 class PimData:
@@ -1649,7 +1693,10 @@ class AiAgent:
         status = self.status()
         fallback_records = related_ai_records(question, "", catalog)
         if not status.get("available"):
-            return {"available": False, "answer": "AI is unavailable.", "status": status, "related_records": fallback_records}
+            answer = "AI is unavailable."
+            if fallback_records:
+                answer = "AI is unavailable. Matching records are listed below."
+            return {"available": False, "answer": answer, "status": status, "related_records": fallback_records}
         prompt = (
             "Jestes agentem wyszukiwania w DB Data Browser. Odpowiadaj po polsku. "
             "Znajdz pasujace produkty, elementy budowlane lub visual attributes na podstawie pól, opisów, cech i filtrów. "
@@ -1665,14 +1712,25 @@ class AiAgent:
             with urlopen(request, timeout=45) as response:
                 payload = json.loads(response.read().decode("utf-8"))
         except TimeoutError:
-            return {"available": True, "answer": "AI did not answer in time. Try a shorter question or narrow the filters.", "timed_out": True, "status": status, "related_records": fallback_records}
+            answer = "AI did not answer in time. Try a shorter question or narrow the filters."
+            if fallback_records:
+                answer = "AI did not answer in time. Matching records are listed below."
+            return {"available": True, "answer": answer, "timed_out": True, "status": status, "related_records": fallback_records}
         except socket.timeout:
-            return {"available": True, "answer": "AI did not answer in time. Try a shorter question or narrow the filters.", "timed_out": True, "status": status, "related_records": fallback_records}
+            answer = "AI did not answer in time. Try a shorter question or narrow the filters."
+            if fallback_records:
+                answer = "AI did not answer in time. Matching records are listed below."
+            return {"available": True, "answer": answer, "timed_out": True, "status": status, "related_records": fallback_records}
         except Exception:
-            return {"available": False, "answer": "AI is temporarily unavailable. Try again later.", "status": {"available": False, "message": "AI unavailable"}, "related_records": fallback_records}
+            answer = "AI is temporarily unavailable. Try again later."
+            if fallback_records:
+                answer = "AI is temporarily unavailable. Matching records are listed below."
+            return {"available": False, "answer": answer, "status": {"available": False, "message": "AI unavailable"}, "related_records": fallback_records}
         answer = extract_ai_answer(payload)
         if not answer:
             answer = "AI did not return a clear answer. Try asking more specifically."
+            if fallback_records:
+                answer = "Matching records are listed below."
         return {"available": True, "answer": answer, "status": status, "related_records": related_ai_records(question, answer, catalog)}
 
 
