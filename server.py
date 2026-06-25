@@ -1186,12 +1186,15 @@ class PimData:
         kind = kind.lower().strip()
         items = []
         for color in self.colors:
-            detail = self.color_detail(int(color["Id"]), compact=True)
-            haystack = " ".join(str(value) for value in detail.values()).lower()
-            if query and query not in haystack:
-                continue
+            color_id = int(color["Id"])
+            detail = self.color_detail(color_id, compact=True)
             if kind and detail.get("type") != kind:
                 continue
+            if query:
+                full_detail = self.color_detail(color_id)
+                haystack = f"{visual_attribute_ai_text(full_detail)} {' '.join(str(value) for value in full_detail.values())}".lower()
+                if query not in haystack and not matches_ai_query(haystack, query):
+                    continue
             items.append(detail)
         return {"items": items, "groups": self.list_color_groups()["items"]}
 

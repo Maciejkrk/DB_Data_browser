@@ -1767,20 +1767,24 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       if (kind) params.set("kind", kind);
       if (query) params.set("q", query);
       const data = await api(`/api/colors${params.toString() ? `?${params.toString()}` : ""}`);
-      const colorsWithRgb = (data.items || []).filter((item) => item.rgb);
+      const colorItems = data.items || [];
+      const colorsWithRgb = colorItems.filter((item) => item.rgb);
       const matches = state.rgbSelection ? colorsWithRgb.filter(colorMatchesRgbSelection) : [];
+      const hasSearch = Boolean(query || kind);
+      const visibleColors = state.rgbSelection ? matches : hasSearch ? colorItems : [];
       state.rgbMatches = matches;
       $("detail").innerHTML = `
         <div class="detail-head">
           <h2>Visual Attributes</h2>
           <div class="summary">
             <span class="pill">${esc(state.items.length)} groups</span>
-            <span class="pill">${esc(colorsWithRgb.length)} visual attributes with RGB</span>
+            ${hasSearch ? `<span class="pill">${esc(colorItems.length)} keyword matches</span>` : ""}
+            <span class="pill">${esc(colorsWithRgb.length)} visual attributes with RGB${hasSearch ? " in current search" : ""}</span>
             ${state.rgbSelection ? `<span class="pill">${esc(matches.length)} RGB matches</span>` : ""}
           </div>
         </div>
         ${rgbSearchPanel(colorsWithRgb.length, matches.length)}
-        ${state.rgbSelection ? renderRgbMatches(matches) : `<div class="muted">Select a visual attribute group on the left, or draw an RGB range above to show matching colors and textures.</div>`}
+        ${visibleColors.length || hasSearch || state.rgbSelection ? renderColorSearchMatches(visibleColors, state.rgbSelection ? "RGB range matches" : "Keyword matches") : `<div class="muted">Select a visual attribute group on the left, type a keyword, or draw an RGB range above to show matching colors and textures.</div>`}
       `;
       attachRgbSearchEvents();
       attachColorTileEvents();
@@ -1859,9 +1863,9 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         && b >= range.bMin && b <= range.bMax;
     }
 
-    function renderRgbMatches(items) {
+    function renderColorSearchMatches(items, title) {
       return `<details open>
-        <summary>RGB matches (${items.length})</summary>
+        <summary>${esc(title)} (${items.length})</summary>
         <div class="color-gallery">${items.map((item) => `
           <div class="color-tile">
             <button type="button" data-color-id="${esc(item.id)}">
@@ -1873,7 +1877,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
               </div>
             </button>
           </div>
-        `).join("") || `<div class="muted">No visual attributes in selected RGB range.</div>`}</div>
+        `).join("") || `<div class="muted">No visual attributes match the current search.</div>`}</div>
       </details>`;
     }
 
