@@ -855,8 +855,7 @@
       aiResult: null,
       detailView: "list",
       rgbSelection: null,
-      rgbBlue: 128,
-      rgbTolerance: 255,
+      rgbRange: { rMin: 0, rMax: 255, gMin: 0, gMax: 255, bMin: 0, bMax: 255 },
       rgbMatches: [],
       summary: null,
       project: null,
@@ -1800,16 +1799,16 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
             ${rgbSelectionBox()}
           </div>
           <div class="rgb-controls">
-            <label>Blue value
-              <input id="rgbBlueInput" type="range" min="0" max="255" value="${esc(state.rgbBlue)}">
-            </label>
-            <label>Blue tolerance
-              <input id="rgbToleranceInput" type="range" min="0" max="255" value="${esc(state.rgbTolerance)}">
-            </label>
+            ${rgbRangeControl("R min", "rMin")}
+            ${rgbRangeControl("R max", "rMax")}
+            ${rgbRangeControl("G min", "gMin")}
+            ${rgbRangeControl("G max", "gMax")}
+            ${rgbRangeControl("B min", "bMin")}
+            ${rgbRangeControl("B max", "bMax")}
             <div class="rgb-readout">
               <div>RGB records available: ${esc(total)}</div>
-              <div>${state.rgbSelection ? `Matches: ${esc(matched)}` : "Draw a rectangle on the map to select R/G range."}</div>
-              ${selection ? `<div>R ${esc(selection.rMin)}-${esc(selection.rMax)}, G ${esc(selection.gMin)}-${esc(selection.gMax)}, B ${esc(selection.bMin)}-${esc(selection.bMax)}</div>` : ""}
+              <div>${state.rgbSelection ? `Matches: ${esc(matched)}` : "Draw a rectangle on the map to set R/G range, then adjust any RGB component below."}</div>
+              <div>R ${esc(selection.rMin)}-${esc(selection.rMax)}, G ${esc(selection.gMin)}-${esc(selection.gMax)}, B ${esc(selection.bMin)}-${esc(selection.bMax)}</div>
             </div>
             <div class="preview-actions">
               <button type="button" data-clear-rgb-selection${state.rgbSelection ? "" : " disabled"}>Clear RGB range</button>
@@ -1817,6 +1816,12 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
           </div>
         </div>
       </div>`;
+    }
+
+    function rgbRangeControl(label, key) {
+      return `<label>${esc(label)}: ${esc(state.rgbRange[key])}
+        <input data-rgb-range="${esc(key)}" type="range" min="0" max="255" value="${esc(state.rgbRange[key])}">
+      </label>`;
     }
 
     function rgbSelectionBox() {
@@ -1836,17 +1841,13 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
     }
 
     function rgbSelectionRange() {
-      if (!state.rgbSelection) return null;
-      const rect = normalizedRgbRect();
-      const bMin = Math.max(0, Number(state.rgbBlue) - Number(state.rgbTolerance));
-      const bMax = Math.min(255, Number(state.rgbBlue) + Number(state.rgbTolerance));
       return {
-        rMin: Math.round(rect.xMin),
-        rMax: Math.round(rect.xMax),
-        gMin: Math.round(255 - rect.yMax),
-        gMax: Math.round(255 - rect.yMin),
-        bMin,
-        bMax,
+        rMin: Math.min(Number(state.rgbRange.rMin), Number(state.rgbRange.rMax)),
+        rMax: Math.max(Number(state.rgbRange.rMin), Number(state.rgbRange.rMax)),
+        gMin: Math.min(Number(state.rgbRange.gMin), Number(state.rgbRange.gMax)),
+        gMax: Math.max(Number(state.rgbRange.gMin), Number(state.rgbRange.gMax)),
+        bMin: Math.min(Number(state.rgbRange.bMin), Number(state.rgbRange.bMax)),
+        bMax: Math.max(Number(state.rgbRange.bMin), Number(state.rgbRange.bMax)),
       };
     }
 
@@ -1892,6 +1893,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
           state.rgbSelection.x2 = point.x;
           state.rgbSelection.y2 = point.y;
         }
+        syncRgbRangeFromSelection();
       };
       let dragging = false;
       canvas.addEventListener("pointerdown", (event) => {
@@ -1910,18 +1912,36 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         updateFromPointer(event);
         renderColorOverview();
       });
-      $("rgbBlueInput")?.addEventListener("input", (event) => {
-        state.rgbBlue = Number(event.target.value);
-        renderColorOverview();
-      });
-      $("rgbToleranceInput")?.addEventListener("input", (event) => {
-        state.rgbTolerance = Number(event.target.value);
-        renderColorOverview();
-      });
+      for (const input of document.querySelectorAll("[data-rgb-range]")) {
+        input.addEventListener("input", () => {
+          state.rgbRange[input.dataset.rgbRange] = Number(input.value);
+          state.rgbSelection = selectionFromRgbRange();
+          renderColorOverview();
+        });
+      }
       document.querySelector("[data-clear-rgb-selection]")?.addEventListener("click", () => {
         state.rgbSelection = null;
+        state.rgbRange = { rMin: 0, rMax: 255, gMin: 0, gMax: 255, bMin: 0, bMax: 255 };
         renderColorOverview();
       });
+    }
+
+    function syncRgbRangeFromSelection() {
+      if (!state.rgbSelection) return;
+      const rect = normalizedRgbRect();
+      state.rgbRange.rMin = Math.round(rect.xMin);
+      state.rgbRange.rMax = Math.round(rect.xMax);
+      state.rgbRange.gMin = Math.round(255 - rect.yMax);
+      state.rgbRange.gMax = Math.round(255 - rect.yMin);
+    }
+
+    function selectionFromRgbRange() {
+      return {
+        x1: Math.min(Number(state.rgbRange.rMin), Number(state.rgbRange.rMax)),
+        x2: Math.max(Number(state.rgbRange.rMin), Number(state.rgbRange.rMax)),
+        y1: 255 - Math.max(Number(state.rgbRange.gMin), Number(state.rgbRange.gMax)),
+        y2: 255 - Math.min(Number(state.rgbRange.gMin), Number(state.rgbRange.gMax)),
+      };
     }
 
     function updateRgbSelectionBoxDom() {
@@ -1953,7 +1973,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       canvas.height = size;
       const ctx = canvas.getContext("2d");
       const image = ctx.createImageData(size, size);
-      const b = Math.max(0, Math.min(255, Number(state.rgbBlue) || 0));
+      const b = Math.round((Number(state.rgbRange.bMin) + Number(state.rgbRange.bMax)) / 2);
       for (let y = 0; y < size; y++) {
         for (let x = 0; x < size; x++) {
           const index = (y * size + x) * 4;
