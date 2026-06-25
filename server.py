@@ -571,6 +571,28 @@ def compact_text(value: object, limit: int = 400) -> str:
     return text[:limit]
 
 
+def visual_attribute_ai_text(detail: dict) -> str:
+    parameters = [f"{item.get('name')}: {item.get('value')}" for item in detail.get("parameters") or []]
+    maps = [
+        f"{item.get('parameter')}: {item.get('name') or item.get('url')}"
+        for item in detail.get("material_maps") or []
+    ]
+    groups = [item.get("name", "") for item in detail.get("groups") or []]
+    rgb = detail.get("rgb") or {}
+    is_advanced = detail.get("type") == "advanced"
+    fields = [
+        detail.get("name", ""),
+        f"type: {detail.get('type') or 'simple'}",
+        "texture tekstura material map maps normal opacity roughness displacement" if is_advanced else "color kolor rgb",
+        f"RGB: {rgb.get('r')}, {rgb.get('g')}, {rgb.get('b')}" if rgb else "",
+        f"groups: {', '.join(groups)}" if groups else "",
+        f"used by products: {len(detail.get('used_by_products') or [])}",
+        f"maps: {', '.join(maps)}" if maps else "",
+        *parameters,
+    ]
+    return " | ".join(str(item) for item in fields if item)
+
+
 def preview_fields(items: list[dict], limit: int = 3) -> list[dict]:
     fields = []
     for item in items:
@@ -730,11 +752,22 @@ class PimData:
             result[product_id] = identities
         return result
 
-    def ai_catalog(self, mode: str = "", limit: int = 80) -> list[dict]:
+    def ai_catalog(self, mode: str = "", limit: int = 80, query: str = "") -> list[dict]:
         mode = mode.lower().strip()
+        query = query.lower().strip()
+        normalized_query = query.replace("_", " ")
         items = []
         if mode in ("", "products"):
-            for product in self.products[:limit]:
+            product_candidates = self.products
+            if query:
+                matched = []
+                for product in self.products:
+                    detail = self.product_detail(int(product["Id"]), compact=True)
+                    haystack = " ".join(str(value) for value in [detail["name"], detail.get("unit"), *detail.get("categories", [])]).lower()
+                    if query in haystack:
+                        matched.append(product)
+                product_candidates = matched or product_candidates
+            for product in product_candidates[:limit]:
                 detail = self.product_detail(int(product["Id"]))
                 values = [item.get("value") for item in detail.get("general") or []]
                 features = [f"{item.get('name')}: {item.get('value')}" for item in detail.get("features") or []]
@@ -747,7 +780,16 @@ class PimData:
                     }
                 )
         if mode in ("", "systems"):
-            for element in self.elements[:limit]:
+            element_candidates = self.elements
+            if query:
+                matched = []
+                for element in self.elements:
+                    detail = self.system_detail(int(element["Id"]), compact=True)
+                    haystack = " ".join(str(value) for value in [detail["name"], *detail.get("preview_fields", [])]).lower()
+                    if query in haystack:
+                        matched.append(element)
+                element_candidates = matched or element_candidates
+            for element in element_candidates[:limit]:
                 detail = self.system_detail(int(element["Id"]))
                 values = [item.get("value") for item in detail.get("general") or []]
                 layers = [
@@ -763,14 +805,50 @@ class PimData:
                     }
                 )
         if mode in ("", "colors"):
-            for group in self.color_groups[:limit]:
-                detail = self.color_group_detail(int(group["Id"]), compact=True)
+            group_details = [self.color_group_detail(int(group["Id"]), compact=True) for group in self.color_groups]
+            if query:
+                matched_groups = [
+                    detail for detail in group_details
+                    if normalized_query in (
+                        f"{detail.get('name', '')} {detail.get('description', '')} "
+                        f"{' '.join(item.get('name', '') for item in detail.get('sample_colors') or [])}"
+                    ).lower().replace("_", " ")
+                ]
+                group_details = matched_groups
+            for detail in group_details[: max(8, limit // 3)]:
+                sample_names = ", ".join(item.get("name", "") for item in detail.get("sample_colors") or [])
+                group_fields = [
+                    detail.get("description", ""),
+                    f"items: {detail.get('count', 0)}",
+                    f"sample visual attributes: {sample_names}" if sample_names else "",
+                    f"used by products: {len(detail.get('used_by_products') or [])}",
+                ]
                 items.append(
                     {
                         "type": "visual_attribute_group",
                         "id": detail["id"],
                         "name": detail["name"],
-                        "text": compact_text(f"{detail.get('description', '')} | items: {detail.get('count', 0)}", 600),
+                        "text": compact_text(" | ".join(item for item in group_fields if item), 1200),
+                    }
+                )
+            color_details = [self.color_detail(int(color["Id"])) for color in self.colors]
+            if query:
+                matched_colors = [
+                    detail for detail in color_details
+                    if normalized_query in visual_attribute_ai_text(detail).lower().replace("_", " ")
+                ]
+                color_details = matched_colors or color_details
+            else:
+                simple = [detail for detail in color_details if detail.get("type") != "advanced"]
+                advanced = [detail for detail in color_details if detail.get("type") == "advanced"]
+                color_details = [*simple[: limit // 2], *advanced[: limit // 2]]
+            for detail in color_details[:limit]:
+                items.append(
+                    {
+                        "type": "visual_attribute",
+                        "id": detail["id"],
+                        "name": detail["name"],
+                        "text": compact_text(visual_attribute_ai_text(detail), 1600),
                     }
                 )
         return items
@@ -1609,7 +1687,7 @@ def make_store_handler(store: DataStore):
                 question = str(payload.get("question") or "")
                 mode = str(payload.get("mode") or "")
                 try:
-                    self.send_json(store.ai.search(question, self.ready_data().ai_catalog(mode=mode)))
+                    self.send_json(store.ai.search(question, self.ready_data().ai_catalog(mode=mode, query=question)))
                 except Exception as error:
                     self.send_json({"available": False, "answer": "", "error": str(error)}, status=502)
                 return
