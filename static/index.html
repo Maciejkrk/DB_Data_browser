@@ -317,6 +317,22 @@
       border-bottom: 1px solid var(--line);
       margin-bottom: 14px;
     }
+    .nav-return {
+      margin-bottom: 10px;
+    }
+    .nav-return button {
+      width: auto;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: #fff;
+      color: var(--accent);
+      font-weight: 800;
+    }
+    .nav-return button:hover {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+    }
     .grid {
       display: grid;
       grid-template-columns: repeat(2, minmax(220px, 1fr));
@@ -681,6 +697,7 @@
       requestId: 0,
       ai: { available: false },
       summary: null,
+      navStack: [],
     };
     const REQUIRED_FILES = [
       "productsModels.json",
@@ -719,19 +736,82 @@
       return data;
     }
 
-    function setMode(mode) {
+    function applyModeChrome(mode) {
       state.mode = mode;
-      state.selectedId = null;
-      state.selectedRecords = new Set();
       $("productsTab").classList.toggle("active", mode === "products");
       $("systemsTab").classList.toggle("active", mode === "systems");
       $("colorsTab").classList.toggle("active", mode === "colors");
       $("correctionsTab").classList.toggle("active", mode === "corrections");
       $("categorySelect").hidden = mode !== "colors";
       $("searchInput").hidden = mode === "corrections";
+    }
+
+    function setMode(mode, options = {}) {
+      applyModeChrome(mode);
+      state.selectedId = null;
+      state.selectedRecords = new Set();
+      if (!options.keepNavigation) state.navStack = [];
       $("searchInput").value = "";
       renderFilterOptions();
-      loadList();
+      return loadList();
+    }
+
+    function activeDetailTitle() {
+      return document.querySelector(".detail-head h2")?.textContent?.trim() || "";
+    }
+
+    function modeLabel(mode = state.mode) {
+      if (mode === "products") return "Products";
+      if (mode === "systems") return "Building Elements";
+      if (mode === "colors") return "Visual Attributes";
+      if (mode === "corrections") return "Corrections";
+      return "Previous view";
+    }
+
+    function currentNavigationEntry(label = "") {
+      if (!state.selectedId) return null;
+      const title = label || activeDetailTitle() || modeLabel();
+      return {
+        mode: state.mode,
+        selectedId: state.selectedId,
+        kind: state.mode === "corrections" ? "note" : state.mode === "colors" ? "color_group" : "detail",
+        label: title,
+      };
+    }
+
+    function pushCurrentNavigation(label = "") {
+      const entry = currentNavigationEntry(label);
+      if (!entry) return;
+      const last = state.navStack[state.navStack.length - 1];
+      if (last && last.mode === entry.mode && String(last.selectedId) === String(entry.selectedId) && last.kind === entry.kind) return;
+      state.navStack.push(entry);
+    }
+
+    function navigationBackControl() {
+      const previous = state.navStack[state.navStack.length - 1];
+      if (!previous) return "";
+      return `<div class="nav-return"><button type="button" data-nav-back>Back to ${esc(previous.label || modeLabel(previous.mode))}</button></div>`;
+    }
+
+    async function restorePreviousView() {
+      const previous = state.navStack.pop();
+      if (!previous) return;
+      applyModeChrome(previous.mode);
+      state.selectedId = previous.selectedId;
+      state.selectedRecords = new Set();
+      await loadList();
+      if (previous.kind === "note") {
+        openNote(previous.selectedId);
+      } else if (previous.kind === "color_group") {
+        await loadColorGroup(Number(previous.selectedId));
+      } else {
+        await loadDetail(Number(previous.selectedId));
+      }
+    }
+
+    function attachNavigationControls() {
+      const button = document.querySelector("[data-nav-back]");
+      if (button) button.addEventListener("click", restorePreviousView);
     }
 
     function recordTypeForMode(mode = state.mode) {
@@ -1164,6 +1244,7 @@
       const note = state.items.find((item) => item.key === key);
       if (!note) return;
       $("detail").innerHTML = `
+        ${navigationBackControl()}
         <div class="detail-head">
           <h2>${esc(note.record_name || note.key)}</h2>
           <div class="summary">
@@ -1182,10 +1263,12 @@
       `;
       const button = document.querySelector("[data-open-record]");
       if (button) {
-        button.addEventListener("click", () => {
+        button.addEventListener("click", async () => {
           const [type, id] = button.dataset.openRecord.split(":");
-          setMode(type === "system" ? "systems" : type === "color" || type === "color_group" ? "colors" : "products");
-          setTimeout(() => type === "color_group" ? loadColorGroup(Number(id)) : loadDetail(Number(id)), 150);
+          pushCurrentNavigation("Corrections");
+          await setMode(type === "system" ? "systems" : type === "color" || type === "color_group" ? "colors" : "products", { keepNavigation: true });
+          if (type === "color_group") await loadColorGroup(Number(id));
+          else await loadDetail(Number(id));
         });
       }
       const resolvedButton = document.querySelector("[data-toggle-note-resolved]");
@@ -1195,6 +1278,7 @@
           await loadList();
         });
       }
+      attachNavigationControls();
     }
 
     async function importNotesFile() {
@@ -1255,6 +1339,7 @@
       $("detail").innerHTML = renderColorGroup(data);
       attachColorTileEvents();
       attachCorrectionPanel(data, "color_group");
+      attachNavigationControls();
     }
 
     async function loadDetail(id) {
@@ -1269,10 +1354,12 @@
       attachColorTileEvents();
       attachSystemProductLinks();
       attachCorrectionPanel(data, state.mode === "products" ? "product" : state.mode === "systems" ? "system" : "color");
+      attachNavigationControls();
     }
 
     function renderProduct(data) {
       return `
+        ${navigationBackControl()}
         <div class="detail-head">
           <h2>${esc(data.name)}</h2>
           <div class="summary">
@@ -1299,6 +1386,7 @@
 
     function renderSystem(data) {
       return `
+        ${navigationBackControl()}
         <div class="detail-head">
           <h2>${esc(data.name)}</h2>
           <div class="summary">
@@ -1317,8 +1405,9 @@
       `;
     }
 
-    function renderColor(data) {
+    function renderColor(data, showNavigation = true) {
       return `
+        ${showNavigation ? navigationBackControl() : ""}
         <div class="detail-head">
           <h2>${esc(data.name)}</h2>
           <div class="summary">
@@ -1439,6 +1528,7 @@
       const filter = $("categorySelect").value || "";
       const colors = (data.colors || []).filter((item) => !filter || item.type === filter);
       return `
+        ${navigationBackControl()}
         <div class="detail-head">
           <h2>${esc(data.name)}</h2>
           <div class="summary">
@@ -1487,7 +1577,7 @@
     async function openColorModal(id) {
       const data = await api(`/api/colors/${id}`);
       $("modalTitle").textContent = data.name;
-      $("modalBody").innerHTML = renderColor(data);
+      $("modalBody").innerHTML = renderColor(data, false);
       $("modalBackdrop").hidden = false;
       attachPreviewEvents(data);
       attachCorrectionPanel(data, "color", $("modalBody"));
@@ -1828,12 +1918,10 @@
       }
       for (const button of document.querySelectorAll("[data-color-group-id]")) {
         button.addEventListener("click", async () => {
-          state.mode = "colors";
+          pushCurrentNavigation();
+          applyModeChrome("colors");
           state.selectedId = Number(button.dataset.colorGroupId);
-          $("productsTab").classList.remove("active");
-          $("systemsTab").classList.remove("active");
-          $("colorsTab").classList.add("active");
-          $("categorySelect").hidden = false;
+          state.selectedRecords = new Set();
           $("searchInput").value = "";
           await loadList();
           await loadColorGroup(Number(button.dataset.colorGroupId));
@@ -1954,9 +2042,10 @@
 
     function attachSystemProductLinks() {
       for (const button of document.querySelectorAll("[data-linked-product-id]")) {
-        button.addEventListener("click", () => {
-          setMode("products");
-          setTimeout(() => loadDetail(Number(button.dataset.linkedProductId)), 150);
+        button.addEventListener("click", async () => {
+          pushCurrentNavigation();
+          await setMode("products", { keepNavigation: true });
+          await loadDetail(Number(button.dataset.linkedProductId));
         });
       }
     }
