@@ -1214,7 +1214,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       state.ai = status;
       $("aiPanel").hidden = !status.available;
       $("aiStatus").textContent = status.available
-        ? `Connected: ${status.model}${status.url ? ` at ${status.url}` : ""}`
+        ? "AI available"
         : "";
     }
 
@@ -1224,14 +1224,14 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         $("aiStatus").textContent = "Enter a question first.";
         return;
       }
-      $("aiStatus").textContent = "Searching with AI...";
+      $("aiStatus").textContent = "AI is searching...";
       try {
         const result = await apiPost("/api/ai/search", { question, mode: state.mode === "corrections" ? "" : state.mode });
-        const answer = result.answer || result.error || result.status?.reason || "AI returned an empty response.";
+        const answer = result.answer || "AI did not return a clear answer. Try asking more specifically.";
         $("detail").innerHTML = `
           <div class="detail-head">
             <h2>AI search result</h2>
-            <div class="summary"><span class="pill">${esc(result.status?.model || state.ai.model || "AI")}</span></div>
+            <div class="summary"><span class="pill">${result.available === false ? "AI unavailable" : "AI available"}</span></div>
           </div>
           <div class="field">
             <div class="field-label">Question</div>
@@ -1241,11 +1241,10 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
             <div class="field-label">Answer</div>
             <div class="field-value">${esc(answer)}</div>
           </div>
-          ${result.raw_keys?.length ? `<div class="muted">Raw response keys: ${esc(result.raw_keys.join(", "))}</div>` : ""}
         `;
-        $("aiStatus").textContent = "Done.";
+        $("aiStatus").textContent = result.timed_out ? "AI did not answer in time." : "AI response ready.";
       } catch (error) {
-        $("aiStatus").textContent = error.message;
+        $("aiStatus").textContent = "AI unavailable";
       }
     }
 

@@ -9,6 +9,7 @@ import json
 import mimetypes
 import os
 import re
+import socket
 import time
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -1482,21 +1483,20 @@ class AiAgent:
 
     def status(self) -> dict:
         if not self.base_url:
-            return {"available": False, "reason": "DB_DATA_BROWSER_AI_URL is not configured", "model": self.model}
+            return {"available": False, "message": "AI unavailable"}
         try:
             url = self.base_url if self.base_url.endswith("/api/tags") else f"{self.ollama_root()}/api/tags"
             request = Request(url, headers={"User-Agent": "DB-Data-Browser/1.0"})
             with urlopen(request, timeout=2) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-            models = [item.get("name") for item in payload.get("models", [])]
-            return {"available": True, "url": self.base_url, "model": self.model, "models": models}
-        except Exception as error:
-            return {"available": False, "url": self.base_url, "model": self.model, "reason": str(error)}
+                response.read()
+            return {"available": True, "message": "AI available"}
+        except Exception:
+            return {"available": False, "message": "AI unavailable"}
 
     def search(self, question: str, catalog: list[dict]) -> dict:
         status = self.status()
         if not status.get("available"):
-            return {"available": False, "answer": "", "status": status}
+            return {"available": False, "answer": "AI is unavailable.", "status": status}
         prompt = (
             "Jestes agentem wyszukiwania w DB Data Browser. Odpowiadaj po polsku. "
             "Znajdz pasujace produkty, elementy budowlane lub visual attributes na podstawie pól, opisów, cech i filtrów. "
@@ -1507,13 +1507,19 @@ class AiAgent:
         endpoint = self.base_url if self.base_url.endswith("/api/generate") else f"{self.ollama_root()}/api/generate"
         body = json.dumps({"model": self.model, "prompt": prompt, "stream": False}, ensure_ascii=False).encode("utf-8")
         request = Request(endpoint, data=body, headers={"Content-Type": "application/json", "User-Agent": "DB-Data-Browser/1.0"})
-        with urlopen(request, timeout=45) as response:
-            payload = json.loads(response.read().decode("utf-8"))
+        try:
+            with urlopen(request, timeout=45) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except TimeoutError:
+            return {"available": True, "answer": "AI did not answer in time. Try a shorter question or narrow the filters.", "timed_out": True, "status": status}
+        except socket.timeout:
+            return {"available": True, "answer": "AI did not answer in time. Try a shorter question or narrow the filters.", "timed_out": True, "status": status}
+        except Exception:
+            return {"available": False, "answer": "AI is temporarily unavailable. Try again later.", "status": {"available": False, "message": "AI unavailable"}}
         answer = extract_ai_answer(payload)
-        raw_keys = sorted(payload.keys()) if isinstance(payload, dict) else []
         if not answer:
-            answer = f"AI returned an empty text response. Raw response keys: {', '.join(raw_keys) or type(payload).__name__}."
-        return {"available": True, "answer": answer, "status": status, "raw_keys": raw_keys}
+            answer = "AI did not return a clear answer. Try asking more specifically."
+        return {"available": True, "answer": answer, "status": status}
 
 
 class DataStore:
