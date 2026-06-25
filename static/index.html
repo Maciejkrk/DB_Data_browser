@@ -114,6 +114,11 @@
       background: var(--accent);
       color: #fff;
     }
+    .tabs button:disabled {
+      cursor: not-allowed;
+      background: #eef2f7;
+      color: #98a2b3;
+    }
     input, select {
       width: 100%;
       padding: 9px 10px;
@@ -902,6 +907,24 @@
       return data;
     }
 
+    function modeAvailable(mode) {
+      if (mode === "systems") return Number(state.summary?.systems || 0) > 0;
+      if (mode === "colors") return Number(state.summary?.colors || 0) > 0 || Number(state.summary?.color_groups || 0) > 0;
+      return true;
+    }
+
+    function applyDataAvailability() {
+      const systemsAvailable = modeAvailable("systems");
+      const colorsAvailable = modeAvailable("colors");
+      $("systemsTab").disabled = !systemsAvailable;
+      $("systemsTab").title = systemsAvailable ? "" : "No building elements in the current source data";
+      $("colorsTab").disabled = !colorsAvailable;
+      $("colorsTab").title = colorsAvailable ? "" : "No visual attributes in the current source data";
+      if (!modeAvailable(state.mode)) {
+        applyModeChrome("products");
+      }
+    }
+
     function applyModeChrome(mode) {
       state.mode = mode;
       $("productsTab").classList.toggle("active", mode === "products");
@@ -913,6 +936,10 @@
     }
 
     function setMode(mode, options = {}) {
+      if (!modeAvailable(mode)) {
+        $("detail").innerHTML = `<div class="muted">${esc(modeLabel(mode))} is not available in the current source data.</div>`;
+        return Promise.resolve(false);
+      }
       if (!options.skipAppHistory) rememberAppLocation();
       applyModeChrome(mode);
       state.selectedId = null;
@@ -922,7 +949,7 @@
       if (!options.keepNavigation) state.navStack = [];
       $("searchInput").value = "";
       renderFilterOptions();
-      return loadList();
+      return loadList().then(() => true);
     }
 
     function cloneFilters(filters = state.filters) {
@@ -996,6 +1023,9 @@
     async function restoreAppLocation(entry) {
       state.restoringHistory = true;
       try {
+        if (!modeAvailable(entry.mode)) {
+          entry = { mode: "products", kind: "list", selectedId: null, filters: cloneFilters(), search: "", category: "", view: state.view, label: "Products" };
+        }
         applyModeChrome(entry.mode);
         state.filters = cloneFilters(entry.filters);
         state.view = entry.view || state.view;
@@ -1189,13 +1219,15 @@
     async function loadSummary() {
       const summary = await api("/api/summary");
       state.summary = summary;
+      const visualAttributesTotal = Number(summary.colors || 0) + Number(summary.color_groups || 0);
       $("summary").innerHTML = `
         <span class="pill">Products: ${esc(summary.products)}</span>
-        <span class="pill">Building elements: ${esc(summary.systems)}</span>
-        <span class="pill">Visual attributes: ${esc(summary.colors || 0)}</span>
+        <span class="pill${summary.systems ? "" : " muted"}">Building elements: ${summary.systems ? esc(summary.systems) : "not in source"}</span>
+        <span class="pill${visualAttributesTotal ? "" : " muted"}">Visual attributes: ${visualAttributesTotal ? esc(`${summary.colors || 0} items / ${summary.color_groups || 0} groups`) : "not in source"}</span>
         ${summary.consistency?.products_without_building_element ? `<span class="pill warn">Unlinked products: ${esc(summary.consistency.products_without_building_element)}</span>` : ""}
         <span class="pill">Source: ${esc(summary.data_dir)}</span>
       `;
+      applyDataAvailability();
     }
 
     async function loadProject() {
@@ -1403,7 +1435,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
           const [mode, kind, id] = button.dataset.aiRecord.split(":");
           rememberAppLocation("AI search result");
           pushCurrentNavigation("AI search result");
-          await setMode(mode, { keepNavigation: true, keepAiResult: true, skipAppHistory: true });
+          if (!await setMode(mode, { keepNavigation: true, keepAiResult: true, skipAppHistory: true })) return;
           if (kind === "color_group") await loadColorGroup(Number(id), { skipAppHistory: true });
           else await loadDetail(Number(id), { skipAppHistory: true });
         });
@@ -1730,7 +1762,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         button.addEventListener("click", async () => {
           const [type, id] = button.dataset.openRecord.split(":");
           pushCurrentNavigation("Corrections");
-          await setMode(type === "system" ? "systems" : type === "color" || type === "color_group" ? "colors" : "products", { keepNavigation: true, skipAppHistory: true });
+          if (!await setMode(type === "system" ? "systems" : type === "color" || type === "color_group" ? "colors" : "products", { keepNavigation: true, skipAppHistory: true })) return;
           if (type === "color_group") await loadColorGroup(Number(id), { skipAppHistory: true });
           else await loadDetail(Number(id), { skipAppHistory: true });
         });
@@ -2662,6 +2694,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       }
       for (const button of document.querySelectorAll("[data-color-group-id]")) {
         button.addEventListener("click", async () => {
+          if (!modeAvailable("colors")) return;
           pushCurrentNavigation();
           rememberAppLocation();
           applyModeChrome("colors");
@@ -2795,7 +2828,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         button.addEventListener("click", async () => {
           pushCurrentNavigation();
           rememberAppLocation();
-          await setMode("products", { keepNavigation: true, skipAppHistory: true });
+          if (!await setMode("products", { keepNavigation: true, skipAppHistory: true })) return;
           await loadDetail(Number(button.dataset.linkedProductId), { skipAppHistory: true });
         });
       }
