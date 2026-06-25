@@ -1486,6 +1486,7 @@ class ReviewProjectStore:
             "due_date": str(payload.get("due_date") or ""),
             "created_at": created_at,
             "updated_at": int(payload.get("updated_at") or created_at),
+            "configured": self.path.exists(),
         }
 
     def save(self, payload: dict) -> dict:
@@ -1557,10 +1558,14 @@ def project_progress(notes: list[dict], data: PimData | None) -> dict:
     open_corrections = {key: 0 for key in totals}
     resolved_corrections = {key: 0 for key in totals}
     notes_count = {key: 0 for key in totals}
+    ignored_notes = 0
     for note in notes:
         raw_type = str(note.get("record_type") or "")
         record_type = "visual_attribute" if raw_type in {"color", "color_group"} else raw_type
         if record_type not in totals:
+            continue
+        if data and not note_exists_in_data(note, data):
+            ignored_notes += 1
             continue
         notes_count[record_type] += 1
         if note.get("accepted"):
@@ -1583,7 +1588,26 @@ def project_progress(notes: list[dict], data: PimData | None) -> dict:
         "acceptance_percent": round((total_accepted / total_records) * 100, 1) if total_records else 0,
         "open_corrections_total": sum(open_corrections.values()),
         "resolved_corrections_total": sum(resolved_corrections.values()),
+        "ignored_notes": ignored_notes,
+        "notes_total": sum(notes_count.values()),
     }
+
+
+def note_exists_in_data(note: dict, data: PimData) -> bool:
+    try:
+        record_id = int(note.get("record_id") or 0)
+    except (TypeError, ValueError):
+        return False
+    record_type = str(note.get("record_type") or "")
+    if record_type == "product":
+        return record_id in data.product_index
+    if record_type == "system":
+        return record_id in data.element_index
+    if record_type == "color":
+        return record_id in data.color_index
+    if record_type == "color_group":
+        return record_id in data.color_group_index
+    return False
 
 
 class AiAgent:

@@ -1103,11 +1103,14 @@
         $("projectSummary").innerHTML = "";
         return;
       }
+      if (!project.configured && !progress.notes_total) {
+        $("projectSummary").innerHTML = "";
+        return;
+      }
       $("projectSummary").innerHTML = `
-        <span>${esc(project.name)}</span>
+        ${project.configured ? `<span>${esc(project.name)}</span>` : ""}
         ${project.client ? `<span>Client: ${esc(project.client)}</span>` : ""}
-        <span>${esc(progress.total_accepted)} / ${esc(progress.total_records)} accepted (${esc(progress.acceptance_percent)}%)</span>
-        ${progress.open_corrections_total ? `<span class="warn">${esc(progress.open_corrections_total)} open corrections</span>` : ""}
+        ${project.configured ? `<span>Status: ${esc((project.status || "").replaceAll("_", " "))}</span>` : ""}
       `;
     }
 
@@ -1145,6 +1148,7 @@
             ${projectProgressCard("Building Elements", accepted.system, totals.system, open.system)}
             ${projectProgressCard("Visual Attributes", accepted.visual_attribute, totals.visual_attribute, open.visual_attribute)}
           </div>
+          ${progress.ignored_notes ? `<div class="startup-warning">${esc(progress.ignored_notes)} saved notes are not linked to records in the current source data.</div>` : ""}
           <div class="field">
             <div class="field-label">Server storage</div>
             <div class="field-value">${esc(state.project?.storage?.project_file || "")}
