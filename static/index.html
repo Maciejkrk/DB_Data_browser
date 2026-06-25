@@ -201,6 +201,61 @@
       font: inherit;
       resize: vertical;
     }
+    .rgb-search-panel {
+      display: grid;
+      gap: 12px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      margin-bottom: 14px;
+    }
+    .rgb-search-layout {
+      display: grid;
+      grid-template-columns: minmax(240px, 420px) 1fr;
+      gap: 14px;
+      align-items: start;
+    }
+    .rgb-map-wrap {
+      position: relative;
+      width: 100%;
+      max-width: 420px;
+      aspect-ratio: 1;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      overflow: hidden;
+      background: #fff;
+    }
+    .rgb-map-wrap canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      cursor: crosshair;
+    }
+    .rgb-selection-box {
+      position: absolute;
+      border: 2px solid #111827;
+      background: rgba(255, 255, 255, .18);
+      pointer-events: none;
+    }
+    .rgb-controls {
+      display: grid;
+      gap: 10px;
+    }
+    .rgb-controls label {
+      display: grid;
+      gap: 5px;
+      font-weight: 800;
+    }
+    .rgb-controls input[type="range"] {
+      padding: 0;
+    }
+    .rgb-readout {
+      display: grid;
+      gap: 4px;
+      color: var(--muted);
+      line-height: 1.35;
+    }
     .correction-panel label {
       display: flex;
       align-items: center;
@@ -797,6 +852,12 @@
       notesByKey: {},
       requestId: 0,
       ai: { available: false },
+      aiResult: null,
+      detailView: "list",
+      rgbSelection: null,
+      rgbBlue: 128,
+      rgbTolerance: 255,
+      rgbMatches: [],
       summary: null,
       project: null,
       navStack: [],
@@ -857,6 +918,8 @@
       applyModeChrome(mode);
       state.selectedId = null;
       state.selectedRecords = new Set();
+      state.detailView = "list";
+      if (!options.keepAiResult) state.aiResult = null;
       if (!options.keepNavigation) state.navStack = [];
       $("searchInput").value = "";
       renderFilterOptions();
@@ -881,7 +944,9 @@
 
     function currentAppLocation(label = "") {
       const selectedId = state.selectedId == null ? null : state.selectedId;
-      const kind = selectedId == null
+      const kind = state.detailView === "ai_result"
+        ? "ai_result"
+        : selectedId == null
         ? "list"
         : state.mode === "corrections"
           ? "note"
@@ -896,6 +961,7 @@
         search: $("searchInput")?.value || "",
         category: state.categoryValue || "",
         view: state.view,
+        aiResult: state.detailView === "ai_result" ? state.aiResult : null,
         label: label || activeDetailTitle() || modeLabel(),
       };
     }
@@ -941,7 +1007,10 @@
         $("categorySelect").value = entry.category || "";
         state.categoryValue = entry.category || "";
         await loadList();
-        if (entry.kind === "note") {
+        if (entry.kind === "ai_result") {
+          state.aiResult = entry.aiResult;
+          renderAiResult();
+        } else if (entry.kind === "note") {
           openNote(entry.selectedId, { skipAppHistory: true });
         } else if (entry.kind === "color_group") {
           await loadColorGroup(Number(entry.selectedId), { skipAppHistory: true });
@@ -969,6 +1038,15 @@
     }
 
     function currentNavigationEntry(label = "") {
+      if (state.detailView === "ai_result" && state.aiResult) {
+        return {
+          mode: state.mode,
+          selectedId: null,
+          kind: "ai_result",
+          label: label || "AI search result",
+          aiResult: state.aiResult,
+        };
+      }
       if (!state.selectedId) return null;
       const title = label || activeDetailTitle() || modeLabel();
       return {
@@ -1000,7 +1078,10 @@
       state.selectedId = previous.selectedId;
       state.selectedRecords = new Set();
       await loadList();
-      if (previous.kind === "note") {
+      if (previous.kind === "ai_result") {
+        state.aiResult = previous.aiResult;
+        renderAiResult();
+      } else if (previous.kind === "note") {
         openNote(previous.selectedId, { skipAppHistory: true });
       } else if (previous.kind === "color_group") {
         await loadColorGroup(Number(previous.selectedId), { skipAppHistory: true });
@@ -1269,27 +1350,39 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       $("aiStatus").textContent = "AI is searching...";
       try {
         const result = await apiPost("/api/ai/search", { question, mode: state.mode === "corrections" ? "" : state.mode });
-        const answer = result.answer || "AI did not return a clear answer. Try asking more specifically.";
-        $("detail").innerHTML = `
-          <div class="detail-head">
-            <h2>AI search result</h2>
-            <div class="summary"><span class="pill">${result.available === false ? "AI unavailable" : "AI available"}</span></div>
-          </div>
-          <div class="field">
-            <div class="field-label">Question</div>
-            <div class="field-value">${esc(question)}</div>
-          </div>
-          <div class="field">
-            <div class="field-label">Answer</div>
-            <div class="field-value">${esc(answer)}</div>
-          </div>
-          ${aiRelatedRecords(result.related_records || [])}
-        `;
-        attachAiRecordLinks();
+        state.selectedId = null;
+        state.aiResult = { question, result };
+        renderAiResult();
         $("aiStatus").textContent = result.timed_out ? "AI did not answer in time." : "AI response ready.";
       } catch (error) {
         $("aiStatus").textContent = "AI unavailable";
       }
+    }
+
+    function renderAiResult() {
+      if (!state.aiResult) return;
+      state.detailView = "ai_result";
+      state.selectedId = null;
+      const { question, result } = state.aiResult;
+      const answer = result.answer || "AI did not return a clear answer. Try asking more specifically.";
+      $("detail").innerHTML = `
+        ${navigationBackControl()}
+        <div class="detail-head">
+          <h2>AI search result</h2>
+          <div class="summary"><span class="pill">${result.available === false ? "AI unavailable" : "AI available"}</span></div>
+        </div>
+        <div class="field">
+          <div class="field-label">Question</div>
+          <div class="field-value">${esc(question)}</div>
+        </div>
+        <div class="field">
+          <div class="field-label">Answer</div>
+          <div class="field-value">${esc(answer)}</div>
+        </div>
+        ${aiRelatedRecords(result.related_records || [])}
+      `;
+      attachAiRecordLinks();
+      attachNavigationControls();
     }
 
     function aiRelatedRecords(records) {
@@ -1310,7 +1403,8 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         button.addEventListener("click", async () => {
           const [mode, kind, id] = button.dataset.aiRecord.split(":");
           rememberAppLocation("AI search result");
-          await setMode(mode, { keepNavigation: true, skipAppHistory: true });
+          pushCurrentNavigation("AI search result");
+          await setMode(mode, { keepNavigation: true, keepAiResult: true, skipAppHistory: true });
           if (kind === "color_group") await loadColorGroup(Number(id), { skipAppHistory: true });
           else await loadDetail(Number(id), { skipAppHistory: true });
         });
@@ -1344,12 +1438,15 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       if (state.mode !== "corrections") await refreshNotesIndex();
       renderFilterOptions();
       if (state.mode === "corrections") {
+        state.detailView = "list";
         renderNotesList();
         renderNotesOverview();
       } else if (state.mode === "colors") {
         renderList();
-        $("detail").innerHTML = `<div class="muted">Select a visual attribute group from the list on the left.</div>`;
+        state.detailView = "list";
+        await renderColorOverview();
       } else {
+        state.detailView = "list";
         renderFilters();
         renderResults();
       }
@@ -1555,6 +1652,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
     }
 
     function renderNotesOverview() {
+      state.detailView = "list";
       const openCount = state.items.filter((item) => !item.resolved).length;
       const resolvedCount = state.items.length - openCount;
       $("detail").innerHTML = `
@@ -1604,6 +1702,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
 
     function openNote(key, options = {}) {
       if (!options.skipAppHistory) rememberAppLocation();
+      state.detailView = "note";
       state.selectedId = key;
       renderNotesList();
       const note = state.items.find((item) => item.key === key);
@@ -1660,6 +1759,209 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       await loadList();
     }
 
+    async function renderColorOverview() {
+      state.selectedId = null;
+      const kind = $("categorySelect").value || "";
+      const query = $("searchInput").value.trim();
+      const params = new URLSearchParams();
+      if (kind) params.set("kind", kind);
+      if (query) params.set("q", query);
+      const data = await api(`/api/colors${params.toString() ? `?${params.toString()}` : ""}`);
+      const colorsWithRgb = (data.items || []).filter((item) => item.rgb);
+      const matches = state.rgbSelection ? colorsWithRgb.filter(colorMatchesRgbSelection) : [];
+      state.rgbMatches = matches;
+      $("detail").innerHTML = `
+        <div class="detail-head">
+          <h2>Visual Attributes</h2>
+          <div class="summary">
+            <span class="pill">${esc(state.items.length)} groups</span>
+            <span class="pill">${esc(colorsWithRgb.length)} visual attributes with RGB</span>
+            ${state.rgbSelection ? `<span class="pill">${esc(matches.length)} RGB matches</span>` : ""}
+          </div>
+        </div>
+        ${rgbSearchPanel(colorsWithRgb.length, matches.length)}
+        ${state.rgbSelection ? renderRgbMatches(matches) : `<div class="muted">Select a visual attribute group on the left, or draw an RGB range above to show matching colors and textures.</div>`}
+      `;
+      attachRgbSearchEvents();
+      attachColorTileEvents();
+    }
+
+    function rgbSearchPanel(total, matched) {
+      const selection = rgbSelectionRange();
+      return `<div class="rgb-search-panel">
+        <strong>RGB range search</strong>
+        <div class="rgb-search-layout">
+          <div class="rgb-map-wrap">
+            <canvas id="rgbMapCanvas" width="512" height="512"></canvas>
+            ${rgbSelectionBox()}
+          </div>
+          <div class="rgb-controls">
+            <label>Blue value
+              <input id="rgbBlueInput" type="range" min="0" max="255" value="${esc(state.rgbBlue)}">
+            </label>
+            <label>Blue tolerance
+              <input id="rgbToleranceInput" type="range" min="0" max="255" value="${esc(state.rgbTolerance)}">
+            </label>
+            <div class="rgb-readout">
+              <div>RGB records available: ${esc(total)}</div>
+              <div>${state.rgbSelection ? `Matches: ${esc(matched)}` : "Draw a rectangle on the map to select R/G range."}</div>
+              ${selection ? `<div>R ${esc(selection.rMin)}-${esc(selection.rMax)}, G ${esc(selection.gMin)}-${esc(selection.gMax)}, B ${esc(selection.bMin)}-${esc(selection.bMax)}</div>` : ""}
+            </div>
+            <div class="preview-actions">
+              <button type="button" data-clear-rgb-selection${state.rgbSelection ? "" : " disabled"}>Clear RGB range</button>
+            </div>
+          </div>
+        </div>
+      </div>`;
+    }
+
+    function rgbSelectionBox() {
+      if (!state.rgbSelection) return "";
+      const rect = normalizedRgbRect();
+      return `<div class="rgb-selection-box" style="left:${rect.xMin / 255 * 100}%;top:${rect.yMin / 255 * 100}%;width:${(rect.xMax - rect.xMin) / 255 * 100}%;height:${(rect.yMax - rect.yMin) / 255 * 100}%;"></div>`;
+    }
+
+    function normalizedRgbRect() {
+      const selection = state.rgbSelection || { x1: 0, y1: 0, x2: 0, y2: 0 };
+      return {
+        xMin: Math.min(selection.x1, selection.x2),
+        xMax: Math.max(selection.x1, selection.x2),
+        yMin: Math.min(selection.y1, selection.y2),
+        yMax: Math.max(selection.y1, selection.y2),
+      };
+    }
+
+    function rgbSelectionRange() {
+      if (!state.rgbSelection) return null;
+      const rect = normalizedRgbRect();
+      const bMin = Math.max(0, Number(state.rgbBlue) - Number(state.rgbTolerance));
+      const bMax = Math.min(255, Number(state.rgbBlue) + Number(state.rgbTolerance));
+      return {
+        rMin: Math.round(rect.xMin),
+        rMax: Math.round(rect.xMax),
+        gMin: Math.round(255 - rect.yMax),
+        gMax: Math.round(255 - rect.yMin),
+        bMin,
+        bMax,
+      };
+    }
+
+    function colorMatchesRgbSelection(item) {
+      const rgb = item.rgb || {};
+      const range = rgbSelectionRange();
+      if (!range) return false;
+      const r = Number(rgb.r);
+      const g = Number(rgb.g);
+      const b = Number(rgb.b);
+      return Number.isFinite(r) && Number.isFinite(g) && Number.isFinite(b)
+        && r >= range.rMin && r <= range.rMax
+        && g >= range.gMin && g <= range.gMax
+        && b >= range.bMin && b <= range.bMax;
+    }
+
+    function renderRgbMatches(items) {
+      return `<details open>
+        <summary>RGB matches (${items.length})</summary>
+        <div class="color-gallery">${items.map((item) => `
+          <div class="color-tile">
+            <button type="button" data-color-id="${esc(item.id)}">
+              ${colorTilePreview(item)}
+              <div class="color-tile-body">
+                <strong>${esc(item.name)}</strong>
+                <div class="muted">${item.rgb ? `RGB ${esc(item.rgb.r)}, ${esc(item.rgb.g)}, ${esc(item.rgb.b)}` : ""}</div>
+                <div class="muted">${esc(item.type || "")}</div>
+              </div>
+            </button>
+          </div>
+        `).join("") || `<div class="muted">No visual attributes in selected RGB range.</div>`}</div>
+      </details>`;
+    }
+
+    function attachRgbSearchEvents() {
+      const canvas = $("rgbMapCanvas");
+      if (!canvas) return;
+      drawRgbMap(canvas);
+      const updateFromPointer = (event, first = false) => {
+        const point = rgbCanvasPoint(canvas, event);
+        if (first || !state.rgbSelection) state.rgbSelection = { x1: point.x, y1: point.y, x2: point.x, y2: point.y };
+        else {
+          state.rgbSelection.x2 = point.x;
+          state.rgbSelection.y2 = point.y;
+        }
+      };
+      let dragging = false;
+      canvas.addEventListener("pointerdown", (event) => {
+        dragging = true;
+        canvas.setPointerCapture(event.pointerId);
+        updateFromPointer(event, true);
+        updateRgbSelectionBoxDom();
+      });
+      canvas.addEventListener("pointermove", (event) => {
+        if (!dragging) return;
+        updateFromPointer(event);
+        updateRgbSelectionBoxDom();
+      });
+      canvas.addEventListener("pointerup", (event) => {
+        dragging = false;
+        updateFromPointer(event);
+        renderColorOverview();
+      });
+      $("rgbBlueInput")?.addEventListener("input", (event) => {
+        state.rgbBlue = Number(event.target.value);
+        renderColorOverview();
+      });
+      $("rgbToleranceInput")?.addEventListener("input", (event) => {
+        state.rgbTolerance = Number(event.target.value);
+        renderColorOverview();
+      });
+      document.querySelector("[data-clear-rgb-selection]")?.addEventListener("click", () => {
+        state.rgbSelection = null;
+        renderColorOverview();
+      });
+    }
+
+    function updateRgbSelectionBoxDom() {
+      const wrap = document.querySelector(".rgb-map-wrap");
+      if (!wrap || !state.rgbSelection) return;
+      let box = wrap.querySelector(".rgb-selection-box");
+      if (!box) {
+        box = document.createElement("div");
+        box.className = "rgb-selection-box";
+        wrap.appendChild(box);
+      }
+      const rect = normalizedRgbRect();
+      box.style.left = `${rect.xMin / 255 * 100}%`;
+      box.style.top = `${rect.yMin / 255 * 100}%`;
+      box.style.width = `${(rect.xMax - rect.xMin) / 255 * 100}%`;
+      box.style.height = `${(rect.yMax - rect.yMin) / 255 * 100}%`;
+    }
+
+    function rgbCanvasPoint(canvas, event) {
+      const rect = canvas.getBoundingClientRect();
+      const x = Math.max(0, Math.min(255, ((event.clientX - rect.left) / rect.width) * 255));
+      const y = Math.max(0, Math.min(255, ((event.clientY - rect.top) / rect.height) * 255));
+      return { x, y };
+    }
+
+    function drawRgbMap(canvas) {
+      const size = 256;
+      canvas.width = size;
+      canvas.height = size;
+      const ctx = canvas.getContext("2d");
+      const image = ctx.createImageData(size, size);
+      const b = Math.max(0, Math.min(255, Number(state.rgbBlue) || 0));
+      for (let y = 0; y < size; y++) {
+        for (let x = 0; x < size; x++) {
+          const index = (y * size + x) * 4;
+          image.data[index] = x;
+          image.data[index + 1] = 255 - y;
+          image.data[index + 2] = b;
+          image.data[index + 3] = 255;
+        }
+      }
+      ctx.putImageData(image, 0, 0);
+    }
+
     function renderList() {
       const colorActions = state.mode === "colors" ? `<div class="filters">
         <button class="clear-filters" type="button" data-bulk-accept="true">Accept selected</button>
@@ -1702,6 +2004,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
 
     async function loadColorGroup(id, options = {}) {
       if (!options.skipAppHistory) rememberAppLocation();
+      state.detailView = "color_group";
       state.selectedId = id;
       renderList();
       const data = await api(`/api/color-groups/${id}`);
@@ -1713,6 +2016,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
 
     async function loadDetail(id, options = {}) {
       if (!options.skipAppHistory) rememberAppLocation();
+      state.detailView = "detail";
       const requestId = ++state.requestId;
       state.selectedId = id;
       if (state.mode === "colors") renderList();
