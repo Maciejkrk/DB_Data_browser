@@ -4,6 +4,7 @@ import argparse
 import base64
 import cgi
 import csv
+import ipaddress
 import io
 import json
 import mimetypes
@@ -22,6 +23,10 @@ DEFAULT_DATA_DIR = APP_DIR / "data"
 NOTES_FILE = "browser_corrections.json"
 PROJECT_FILE = "browser_review_project.json"
 ATTACHMENTS_DIR = "correction_attachments"
+MAX_JSON_BODY_BYTES = 10 * 1024 * 1024
+MAX_UPLOAD_BYTES = 250 * 1024 * 1024
+MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
+MAX_REMOTE_ASSET_BYTES = 20 * 1024 * 1024
 REQUIRED_FILES = [
     "productsModels.json",
     "productsAttributes.json",
@@ -68,6 +73,8 @@ def read_json_body(handler) -> dict:
     length = int(handler.headers.get("Content-Length") or "0")
     if length <= 0:
         return {}
+    if length > MAX_JSON_BODY_BYTES:
+        raise ValueError("JSON body is too large")
     return json.loads(handler.rfile.read(length).decode("utf-8"))
 
 
@@ -390,11 +397,22 @@ def selected_filters(qs: dict[str, list[str]]) -> dict[str, list[str]]:
 
 def fetch_remote_asset(url: str) -> tuple[bytes, str]:
     parsed = urlparse(url)
-    if parsed.scheme not in {"http", "https"}:
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise ValueError("Unsupported asset URL")
+    host = parsed.hostname.strip()
+    try:
+        addresses = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except socket.gaierror as error:
+        raise ValueError("Asset host cannot be resolved") from error
+    for address in addresses:
+        ip = ipaddress.ip_address(address[4][0])
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved:
+            raise ValueError("Asset URL host is not allowed")
     request = Request(url, headers={"User-Agent": "DB-Data-Browser/1.0"})
     with urlopen(request, timeout=15) as response:
-        content = response.read()
+        content = response.read(MAX_REMOTE_ASSET_BYTES + 1)
+        if len(content) > MAX_REMOTE_ASSET_BYTES:
+            raise ValueError("Asset is too large")
         content_type = response.headers.get("Content-Type") or mimetypes.guess_type(parsed.path)[0] or "application/octet-stream"
     return content, content_type
 
@@ -1480,6 +1498,8 @@ class NotesStore:
             content = base64.b64decode(raw)
         except Exception:
             return None
+        if len(content) > MAX_ATTACHMENT_BYTES:
+            raise ValueError("Attachment is too large")
         folder = self.attachments_dir / safe_filename(key)
         folder.mkdir(parents=True, exist_ok=True)
         filename = f"{int(time.time())}_{safe_filename(str(attachment.get('name') or 'attachment'))}"
@@ -1494,7 +1514,11 @@ class NotesStore:
         }
 
     def attachment_path(self, key: str, filename: str) -> Path:
-        return self.attachments_dir / safe_filename(key) / safe_filename(filename)
+        base = self.attachments_dir.resolve()
+        path = (base / safe_filename(key) / safe_filename(filename)).resolve()
+        if base not in path.parents:
+            raise ValueError("Invalid attachment path")
+        return path
 
     def bulk_accept(self, payload: dict) -> dict:
         record_type = str(payload.get("record_type") or "")
@@ -1806,17 +1830,21 @@ class DataStore:
     def upload_files(self, uploaded_files: list[tuple[str, bytes]]) -> dict:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         saved = []
+        skipped = []
         for filename, content in uploaded_files:
             safe_name = Path(filename).name
             if safe_name not in REQUIRED_FILES:
+                skipped.append(safe_name)
                 continue
             if not content:
+                skipped.append(safe_name)
                 continue
             (self.data_dir / safe_name).write_bytes(content)
             saved.append(safe_name)
         self.reload()
         status = self.status()
         status["saved"] = saved
+        status["skipped"] = skipped
         return status
 
     def clear(self) -> dict:
@@ -1930,45 +1958,41 @@ def make_store_handler(store: DataStore):
             super().do_GET()
 
         def do_POST(self):
-            parsed = urlparse(self.path)
-            if parsed.path == "/api/source/upload":
-                self.handle_upload()
-                return
-            if parsed.path == "/api/source/clear":
-                self.send_json(store.clear())
-                return
-            if parsed.path == "/api/notes":
-                self.send_json(store.notes.save_note(read_json_body(self)))
-                return
-            if parsed.path == "/api/project":
-                store.project.save(read_json_body(self))
-                self.send_json(store.project.summary(store.data, store.status()))
-                return
-            if parsed.path == "/api/project/import":
-                try:
+            try:
+                parsed = urlparse(self.path)
+                if parsed.path == "/api/source/upload":
+                    self.handle_upload()
+                    return
+                if parsed.path == "/api/source/clear":
+                    self.send_json(store.clear())
+                    return
+                if parsed.path == "/api/notes":
+                    self.send_json(store.notes.save_note(read_json_body(self)))
+                    return
+                if parsed.path == "/api/project":
+                    store.project.save(read_json_body(self))
+                    self.send_json(store.project.summary(store.data, store.status()))
+                    return
+                if parsed.path == "/api/project/import":
                     self.send_json(store.project.import_bundle(read_json_body(self), store.data, store.status()))
-                except ValueError as error:
-                    self.send_json({"error": str(error)}, status=400)
-                return
-            if parsed.path == "/api/notes/import":
-                try:
+                    return
+                if parsed.path == "/api/notes/import":
                     self.send_json(store.notes.import_notes(read_json_body(self)))
-                except ValueError as error:
-                    self.send_json({"error": str(error)}, status=400)
-                return
-            if parsed.path == "/api/records/accept":
-                self.send_json(store.notes.bulk_accept(read_json_body(self)))
-                return
-            if parsed.path == "/api/ai/search":
-                payload = read_json_body(self)
-                question = str(payload.get("question") or "")
-                mode = str(payload.get("mode") or "")
-                try:
+                    return
+                if parsed.path == "/api/records/accept":
+                    self.send_json(store.notes.bulk_accept(read_json_body(self)))
+                    return
+                if parsed.path == "/api/ai/search":
+                    payload = read_json_body(self)
+                    question = str(payload.get("question") or "")
+                    mode = str(payload.get("mode") or "")
                     self.send_json(store.ai.search(question, self.ready_data().ai_catalog(mode=mode, query=question)))
-                except Exception as error:
-                    self.send_json({"available": False, "answer": "", "error": str(error)}, status=502)
-                return
-            self.send_json({"error": "Not found"}, status=404)
+                    return
+                self.send_json({"error": "Not found"}, status=404)
+            except ValueError as error:
+                self.send_json({"error": str(error)}, status=400)
+            except Exception as error:
+                self.send_json({"error": str(error)}, status=502)
 
         def handle_api(self, parsed):
             qs = parse_qs(parsed.query)
@@ -2065,6 +2089,10 @@ def make_store_handler(store: DataStore):
             content_type = self.headers.get("Content-Type", "")
             if not content_type.startswith("multipart/form-data"):
                 self.send_json({"error": "Expected multipart/form-data"}, status=400)
+                return
+            content_length = int(self.headers.get("Content-Length") or "0")
+            if content_length > MAX_UPLOAD_BYTES:
+                self.send_json({"error": "Upload is too large"}, status=413)
                 return
             form = cgi.FieldStorage(
                 fp=self.rfile,
