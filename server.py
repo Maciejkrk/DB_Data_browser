@@ -2122,7 +2122,7 @@ class PimData:
         return [
             {
                 "id": product_id,
-                "label": f"{product_id} - {product_name(self.product_index[product_id], self.product_attr_defs, self.product_name_attribute_ids)}",
+                "label": product_name(self.product_index[product_id], self.product_attr_defs, self.product_name_attribute_ids),
             }
             for product_id in sorted(self.product_index)
         ]
