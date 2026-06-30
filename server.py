@@ -2927,11 +2927,14 @@ class DataPatchStore:
             field_info = data.edit_field_info(str(patch.get("record_type") or ""), int(patch.get("record_id") or 0), str(patch.get("field_key") or ""))
         except Exception:
             return patch
+        original_value = patch.get("original_value") if patch.get("original_value") is not None else field_info.get("current_value")
         return {
             **patch,
             "field_info": field_info,
             "field_label": patch.get("field_label") or field_info.get("field_label") or "",
-            "original_value": patch.get("original_value") if patch.get("original_value") is not None else field_info.get("current_value"),
+            "original_value": original_value,
+            "original_display_value": self.display_value(original_value, field_info),
+            "new_display_value": self.display_value(patch.get("new_value"), field_info),
         }
 
     def get_patch(self, record_type: str, record_id: int, field_key: str) -> dict:
@@ -2972,7 +2975,9 @@ class DataPatchStore:
             "field_label": str(payload.get("field_label") or field_info.get("field_label") or ""),
             "field_info": field_info,
             "original_value": original_value,
+            "original_display_value": self.display_value(original_value, field_info),
             "new_value": payload.get("new_value"),
+            "new_display_value": self.display_value(payload.get("new_value"), field_info),
             "comment": str(payload.get("comment") or "").strip(),
             "active": True,
             "updated_at": now,
@@ -2982,6 +2987,19 @@ class DataPatchStore:
         data_payload["patches"].append(patch)
         write_json(self.path, data_payload)
         return patch
+
+    @staticmethod
+    def display_value(value: object, field_info: dict) -> object:
+        if (field_info.get("input_type") or "") != "product":
+            return value
+        match = re.search(r"\d+", str(value or ""))
+        if not match:
+            return ""
+        product_id = match.group(0)
+        for option in field_info.get("options") or []:
+            if str(option.get("id")) == product_id:
+                return option.get("label") or product_id
+        return product_id
 
     def revert_patch(self, payload: dict) -> dict:
         record_type = str(payload.get("record_type") or "")

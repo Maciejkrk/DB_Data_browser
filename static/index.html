@@ -2749,8 +2749,8 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       host.innerHTML = `
         <div class="field-label">Edit data value</div>
         <div class="field-value patch-editor">
-          <div><strong>Original value:</strong> ${esc(displayPatchValue(original, info))}</div>
-          <div><strong>Corrected value:</strong> ${patch.active ? `<span class="patch-current">${esc(displayPatchValue(patch.new_value, info))}</span>` : `<span class="muted">No active correction saved</span>`}</div>
+          <div><strong>Original value:</strong> ${esc(patch.original_display_value ?? displayPatchValue(original, info))}</div>
+          <div><strong>Corrected value:</strong> ${patch.active ? `<span class="patch-current">${esc(patch.new_display_value ?? displayPatchValue(patch.new_value, info))}</span>` : `<span class="muted">No active correction saved</span>`}</div>
           ${patchInput(info, current)}
           <div class="preview-actions">
             <button type="button" data-save-patch>Save corrected value</button>
@@ -2857,7 +2857,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         button.classList.add("is-preview-correction");
         if (patch) {
           button.textContent = "Correction";
-          button.title = `Correction exists. Corrected value: ${displayPatchValue(patch.new_value ?? "", patch.field_info || {}, button.dataset.fieldDisplayValue || "")}`;
+          button.title = `Correction exists. Corrected value: ${patch.new_display_value ?? displayPatchValue(patch.new_value ?? "", patch.field_info || {}, button.dataset.fieldDisplayValue || "")}`;
           button.hidden = false;
         } else {
           button.hidden = true;
@@ -2927,8 +2927,8 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
             <tbody>${patches.map((patch) => `
               <tr>
                 <td>${esc(patch.field_label || patch.field_key)}</td>
-                <td>${esc(displayPatchValue(patch.original_value ?? "", patch.field_info || {}))}</td>
-                <td class="patch-current">${esc(displayPatchValue(patch.new_value ?? "", patch.field_info || {}))}</td>
+                <td>${esc(patch.original_display_value ?? displayPatchValue(patch.original_value ?? "", patch.field_info || {}))}</td>
+                <td class="patch-current">${esc(patch.new_display_value ?? displayPatchValue(patch.new_value ?? "", patch.field_info || {}))}</td>
               </tr>
             `).join("")}</tbody>
           </table>
@@ -3133,7 +3133,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         const info = patch?.field_info || {};
         const fallbackDisplay = button.dataset.fieldDisplayValue || "";
         valueNode.classList.add("edited-value");
-        valueNode.textContent = displayPatchValue(value, info, fallbackDisplay) ?? "";
+        valueNode.textContent = patch?.new_display_value ?? displayPatchValue(value, info, fallbackDisplay) ?? "";
       }
       const fieldNode = button.closest(".field");
       if (fieldNode) fieldNode.classList.add("edited-field");
@@ -3799,7 +3799,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       return patches.map((patch) => {
         const info = patch.field_info || {};
         const label = patch.field_label || `Added product to ${nodeLabel || "model array"}`;
-        const value = displayPatchValue(patch.new_value ?? "", info);
+        const value = patch.new_display_value ?? displayPatchValue(patch.new_value ?? "", info);
         return `<div class="field edited-field">
           <div class="field-label"><span>${esc(label)}</span></div>
           <div class="field-value"><span data-field-display class="edited-value">${esc(value)}</span> ${fieldNoteButton(recordType, data, patch.field_key, label, patch.new_value ?? "")}</div>
