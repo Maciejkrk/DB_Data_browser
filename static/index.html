@@ -2747,6 +2747,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         state.patchesByKey[saved.key] = saved;
         markPatchedField(context.recordType, context.data.id, context.fieldKey, saved.new_value);
         refreshVisibleRecordPatchSummaries(context.recordType, context.data);
+        refreshVisibleAppendProductPatches(context.recordType, context.data);
         renderPatchEditor(panel, saved, context);
       });
       const revertButton = host.querySelector("[data-revert-patch]");
@@ -2756,6 +2757,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
           delete state.patchesByKey[patch.key];
           unmarkPatchedField(context.recordType, context.data.id, context.fieldKey, original);
           refreshVisibleRecordPatchSummaries(context.recordType, context.data);
+          refreshVisibleAppendProductPatches(context.recordType, context.data);
           renderPatchEditor(panel, { ...patch, ...reverted, active: false, new_value: original }, context);
         });
       }
@@ -2932,6 +2934,14 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         if (panel.dataset.recordType === String(recordType) && panel.dataset.recordId === String(data.id) && !panel.dataset.fieldKey) {
           renderRecordPatchSummary(panel, recordType, data);
         }
+      }
+    }
+
+    function refreshVisibleAppendProductPatches(recordType, data) {
+      for (const host of document.querySelectorAll("[data-append-products]")) {
+        if (host.dataset.recordType !== String(recordType) || host.dataset.recordId !== String(data.id)) continue;
+        host.innerHTML = appendProductPatchesHtml(host.dataset.fieldBaseKey || "", recordType, data, host.dataset.nodeLabel || "");
+        attachFieldNoteButtons(host);
       }
     }
 
@@ -3717,6 +3727,14 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       const addProductBaseKey = node.can_add_product && node.product_attribute_id
         ? `append:array:${node.attribute_id}:parent:${encodeURIComponent(node.parent_hash || "")}:product:${node.product_attribute_id}`
         : "";
+      const appendedProducts = addProductBaseKey && data
+        ? `<div class="model-tree-fields appended-products"
+            data-append-products
+            data-record-type="${esc(recordType)}"
+            data-record-id="${esc(data.id)}"
+            data-field-base-key="${esc(addProductBaseKey)}"
+            data-node-label="${esc(node.label || "model array")}">${appendProductPatchesHtml(addProductBaseKey, recordType, data, node.label || "model array")}</div>`
+        : "";
       const addProductButton = addProductBaseKey && data
         ? `<button class="field-note-button" type="button"
             title="Add another product to this variant"
@@ -3733,10 +3751,33 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
           <span class="muted">Level ${esc(level)} / ${esc(rows.length)} item${rows.length === 1 ? "" : "s"}</span>
           ${addProductButton}
         </summary>
+        ${appendedProducts}
         <div class="model-tree-rows">
           ${rows.map((row) => modelTreeRow(row, recordType, data, level)).join("") || `<div class="muted">No items.</div>`}
         </div>
       </details>`;
+    }
+
+    function appendProductPatchesHtml(baseKey, recordType = "", data = null, nodeLabel = "") {
+      if (!baseKey || !data) return "";
+      const prefix = `${baseKey}:slot:`;
+      const patches = activeRecordPatches(recordType, data.id)
+        .filter((patch) => String(patch.field_key || "").startsWith(prefix))
+        .sort((a, b) => appendPatchSlot(a.field_key) - appendPatchSlot(b.field_key));
+      return patches.map((patch) => {
+        const info = patch.field_info || {};
+        const label = patch.field_label || `Added product to ${nodeLabel || "model array"}`;
+        const value = displayPatchValue(patch.new_value ?? "", info);
+        return `<div class="field edited-field">
+          <div class="field-label"><span>${esc(label)}</span></div>
+          <div class="field-value"><span data-field-display class="edited-value">${esc(value)}</span> ${fieldNoteButton(recordType, data, patch.field_key, label, patch.new_value ?? "")}</div>
+        </div>`;
+      }).join("");
+    }
+
+    function appendPatchSlot(fieldKey) {
+      const slot = Number(String(fieldKey || "").split(":slot:").pop());
+      return Number.isFinite(slot) ? slot : 0;
     }
 
     function modelTreeRow(row, recordType = "", data = null, level = 1) {
