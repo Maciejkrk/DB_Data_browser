@@ -565,6 +565,35 @@
     .record-patch-summary th {
       border-color: #fecdca;
     }
+    .patch-editor {
+      display: grid;
+      gap: 10px;
+    }
+    .patch-editor label,
+    .patch-editor .patch-input-group {
+      display: grid;
+      gap: 6px;
+      font-weight: 800;
+    }
+    .patch-editor textarea,
+    .patch-editor input,
+    .patch-editor select {
+      width: 100%;
+      max-width: none;
+      font: inherit;
+    }
+    .patch-editor textarea {
+      min-height: 160px;
+      resize: vertical;
+      line-height: 1.45;
+    }
+    .modal-body.is-field-editor [data-correction-comment] {
+      min-height: 120px;
+    }
+    .original-preview {
+      display: grid;
+      gap: 14px;
+    }
     .table-cell-note {
       display: flex;
       align-items: flex-start;
@@ -731,7 +760,7 @@
     }
     .modal-backdrop[hidden] { display: none; }
     .modal {
-      width: min(1040px, 96vw);
+      width: min(1180px, 96vw);
       max-height: 92vh;
       overflow: auto;
       border-radius: 8px;
@@ -756,6 +785,12 @@
       color: #fff;
     }
     .modal-body { padding: 14px; }
+    .modal-body.is-field-editor {
+      padding: 18px;
+    }
+    .modal-body.is-original-preview {
+      background: #fff;
+    }
     .project-form {
       display: grid;
       gap: 10px;
@@ -934,6 +969,7 @@
       appForwardStack: [],
       restoringHistory: false,
       categoryValue: "",
+      readOnlyPreview: false,
     };
     const REQUIRED_FILES = [
       "productsModels.json",
@@ -1160,6 +1196,7 @@
     }
 
     function navigationBackControl() {
+      if (state.readOnlyPreview) return "";
       const previous = state.navStack[state.navStack.length - 1];
       if (!previous) return "";
       return `<div class="nav-return"><button type="button" data-nav-back>Back to ${esc(previous.label || modeLabel(previous.mode))}</button></div>`;
@@ -2553,6 +2590,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
     }
 
     function correctionPanel(recordType, data, field = {}) {
+      if (state.readOnlyPreview) return "";
       const fieldKey = field.key || "";
       const fieldLabel = field.label || "";
       const fieldCurrent = field.current ?? "";
@@ -2619,7 +2657,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       const current = patch.active ? patch.new_value : original;
       host.innerHTML = `
         <div class="field-label">Edit data value</div>
-        <div class="field-value">
+        <div class="field-value patch-editor">
           <div><strong>Original value:</strong> ${esc(original)}</div>
           <div><strong>Corrected value:</strong> ${patch.active ? `<span class="patch-current">${esc(displayPatchValue(patch.new_value))}</span>` : `<span class="muted">No active correction saved</span>`}</div>
           ${patchInput(info, current)}
@@ -2680,7 +2718,10 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         <div class="record-patch-summary">
           <header>
             <strong>Object correction state (${patches.length})</strong>
-            <button type="button" data-revert-record-patches>Restore object original values</button>
+            <div class="preview-actions">
+              <button type="button" data-preview-original-record>Preview original object view</button>
+              <button type="button" data-revert-record-patches>Restore object original values</button>
+            </div>
           </header>
           <table>
             <thead><tr><th>Field</th><th>Before correction</th><th>After correction</th></tr></thead>
@@ -2694,6 +2735,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
           </table>
         </div>
       `;
+      host.querySelector("[data-preview-original-record]").addEventListener("click", () => openOriginalRecordPreview(recordType, data));
       host.querySelector("[data-revert-record-patches]").addEventListener("click", async () => {
         const ok = window.confirm(`Restore all active corrections for ${data.name || data.id}?`);
         if (!ok) return;
@@ -2704,6 +2746,31 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         }
         renderRecordPatchSummary(panel, recordType, data);
       });
+    }
+
+    function renderRecordForType(recordType, data) {
+      if (recordType === "product") return renderProduct(data);
+      if (recordType === "system") return renderSystem(data);
+      if (recordType === "color") return renderColor(data, false);
+      if (recordType === "color_group") return renderColorGroup(data);
+      return `<div class="warn">Unsupported object preview.</div>`;
+    }
+
+    function openOriginalRecordPreview(recordType, data) {
+      const previous = state.readOnlyPreview;
+      state.readOnlyPreview = true;
+      const html = renderRecordForType(recordType, data);
+      state.readOnlyPreview = previous;
+      $("modalTitle").textContent = `Original view - ${data.name || data.id}`;
+      $("modalBody").classList.remove("is-field-editor");
+      $("modalBody").classList.add("is-original-preview");
+      $("modalBody").innerHTML = `
+        <div class="original-preview">
+          <div class="muted">This is the original object view without active data corrections applied. Nothing is restored or saved from this preview.</div>
+          ${html}
+        </div>
+      `;
+      $("modalBackdrop").hidden = false;
     }
 
     function refreshVisibleRecordPatchSummaries(recordType, data) {
@@ -2725,7 +2792,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       }
       if (inputType === "multi") {
         const selected = new Set(Array.isArray(value) ? value.map(String) : String(value || "").split("|").map((item) => item.trim()).filter(Boolean));
-        return `<div>New value
+        return `<div class="patch-input-group">New value
           ${(info.options || []).map((option) => `
             <label class="filter-option">
               <input type="checkbox" data-patch-value data-patch-multi value="${esc(option.id)}"${selected.has(String(option.id)) || selected.has(option.label) ? " checked" : ""}>
@@ -2737,8 +2804,13 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       if (inputType === "boolean") {
         return `<label><input type="checkbox" data-patch-value${value === true || String(value).toLowerCase() === "true" ? " checked" : ""}> New value</label>`;
       }
+      if (inputType !== "number") {
+        return `<label>New value
+          <textarea data-patch-value spellcheck="false">${esc(value ?? "")}</textarea>
+        </label>`;
+      }
       return `<label>New value
-        <input data-patch-value type="${inputType === "number" ? "number" : "text"}" value="${esc(value ?? "")}">
+        <input data-patch-value type="number" value="${esc(value ?? "")}">
       </label>`;
     }
 
@@ -2753,6 +2825,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
     }
 
     function fieldNoteButton(recordType, data, fieldKey, fieldLabel, currentValue = "") {
+      if (state.readOnlyPreview) return "";
       if (!data || !fieldKey || !fieldLabel) return "";
       const activePatch = state.patchesByKey[patchKey(recordType, data.id, fieldKey)];
       return `<button class="field-note-button" type="button"
@@ -2836,6 +2909,8 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         current: dataset.fieldCurrent || "",
       };
       $("modalTitle").textContent = `Edit data field - ${field.label}`;
+      $("modalBody").classList.remove("is-original-preview");
+      $("modalBody").classList.add("is-field-editor");
       $("modalBody").innerHTML = correctionPanel(recordType, data, field);
       $("modalBackdrop").hidden = false;
       await attachCorrectionPanel(data, recordType, $("modalBody"));
@@ -2970,6 +3045,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
 
     function closeModal() {
       $("modalBackdrop").hidden = true;
+      $("modalBody").classList.remove("is-field-editor", "is-original-preview");
       $("modalBody").innerHTML = "";
     }
 
