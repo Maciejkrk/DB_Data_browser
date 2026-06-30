@@ -590,10 +590,6 @@
     .modal-body.is-field-editor [data-correction-comment] {
       min-height: 120px;
     }
-    .original-preview {
-      display: grid;
-      gap: 14px;
-    }
     .table-cell-note {
       display: flex;
       align-items: flex-start;
@@ -788,9 +784,6 @@
     .modal-body.is-field-editor {
       padding: 18px;
     }
-    .modal-body.is-original-preview {
-      background: #fff;
-    }
     .project-form {
       display: grid;
       gap: 10px;
@@ -969,7 +962,7 @@
       appForwardStack: [],
       restoringHistory: false,
       categoryValue: "",
-      readOnlyPreview: false,
+      loadedDataPreviewKey: "",
     };
     const REQUIRED_FILES = [
       "productsModels.json",
@@ -1196,7 +1189,6 @@
     }
 
     function navigationBackControl() {
-      if (state.readOnlyPreview) return "";
       const previous = state.navStack[state.navStack.length - 1];
       if (!previous) return "";
       return `<div class="nav-return"><button type="button" data-nav-back>Back to ${esc(previous.label || modeLabel(previous.mode))}</button></div>`;
@@ -2485,11 +2477,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       state.selectedId = id;
       renderList();
       const data = await api(`/api/color-groups/${id}`);
-      $("detail").innerHTML = renderColorGroup(data);
-      attachColorTileEvents();
-      attachCorrectionPanel(data, "color_group");
-      attachNavigationControls();
-      applyPatchMarkers();
+      await renderRecordIntoDetail("color_group", data);
     }
 
     async function loadDetail(id, options = {}) {
@@ -2502,10 +2490,15 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       const path = state.mode === "products" ? `/api/products/${id}` : state.mode === "colors" ? `/api/colors/${id}` : `/api/systems/${id}`;
       const data = await api(path);
       if (requestId !== state.requestId) return;
-      $("detail").innerHTML = state.mode === "products" ? renderProduct(data) : state.mode === "colors" ? renderColor(data) : renderSystem(data);
+      const recordType = state.mode === "products" ? "product" : state.mode === "systems" ? "system" : "color";
+      await renderRecordIntoDetail(recordType, data);
+    }
+
+    async function renderRecordIntoDetail(recordType, data) {
+      $("detail").innerHTML = renderRecordForType(recordType, data);
       attachColorTileEvents();
       attachSystemProductLinks();
-      attachCorrectionPanel(data, state.mode === "products" ? "product" : state.mode === "systems" ? "system" : "color");
+      await attachCorrectionPanel(data, recordType);
       attachNavigationControls();
       attachFieldNoteButtons();
     }
@@ -2590,10 +2583,18 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
     }
 
     function correctionPanel(recordType, data, field = {}) {
-      if (state.readOnlyPreview) return "";
       const fieldKey = field.key || "";
       const fieldLabel = field.label || "";
       const fieldCurrent = field.current ?? "";
+      if (!fieldKey && isLoadedDataPreview(recordType, data.id)) {
+        return `<div class="correction-panel loaded-data-preview" data-correction-panel data-record-type="${esc(recordType)}" data-record-id="${esc(data.id)}">
+          <div class="field">
+            <div class="field-label">Podgląd wczytanych danych</div>
+            <div class="field-value muted">Pokazujesz oryginalne wartości z wczytanych plików. W tym trybie edycja jest wyłączona.</div>
+          </div>
+          <button type="button" data-disable-loaded-preview>Wyłącz podgląd i wróć do edycji</button>
+        </div>`;
+      }
       return `<div class="correction-panel" data-correction-panel data-record-type="${esc(recordType)}" data-record-id="${esc(data.id)}" data-record-name="${esc(data.name)}" data-field-key="${esc(fieldKey)}" data-field-label="${esc(fieldLabel)}" data-field-current="${esc(fieldCurrent)}">
         ${fieldLabel ? `<div class="field"><div class="field-label">Edited field</div><div class="field-value">${esc(fieldLabel)}</div></div>` : ""}
         ${fieldLabel ? `<div data-patch-editor class="field"><div class="field-label">Edit data value</div><div class="field-value muted">Loading editable value...</div></div>` : ""}
@@ -2616,6 +2617,11 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       const fieldKey = panel.dataset.fieldKey || "";
       const fieldLabel = panel.dataset.fieldLabel || "";
       const fieldCurrent = panel.dataset.fieldCurrent || "";
+      const loadedPreviewButton = panel.querySelector("[data-disable-loaded-preview]");
+      if (loadedPreviewButton) {
+        loadedPreviewButton.addEventListener("click", () => disableLoadedDataPreview(recordType, data));
+        return;
+      }
       const note = await api(`/api/notes/${recordType}/${data.id}${fieldKey ? `?field_key=${encodeURIComponent(fieldKey)}` : ""}`);
       const patch = fieldKey ? await api(`/api/patches/${recordType}/${data.id}?field_key=${encodeURIComponent(fieldKey)}`) : null;
       const acceptedInput = panel.querySelector("[data-record-accepted]");
@@ -2700,6 +2706,24 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       return Array.isArray(value) ? value.join(", ") : value;
     }
 
+    function recordPreviewKey(recordType, recordId) {
+      return `${recordType}:${recordId}`;
+    }
+
+    function isLoadedDataPreview(recordType, recordId) {
+      return state.loadedDataPreviewKey === recordPreviewKey(recordType, recordId);
+    }
+
+    async function enableLoadedDataPreview(recordType, data) {
+      state.loadedDataPreviewKey = recordPreviewKey(recordType, data.id);
+      await renderRecordIntoDetail(recordType, data);
+    }
+
+    async function disableLoadedDataPreview(recordType, data) {
+      if (isLoadedDataPreview(recordType, data.id)) state.loadedDataPreviewKey = "";
+      await renderRecordIntoDetail(recordType, data);
+    }
+
     function activeRecordPatches(recordType, recordId) {
       return Object.values(state.patchesByKey)
         .filter((patch) => patch.active && patch.record_type === String(recordType) && String(patch.record_id) === String(recordId))
@@ -2719,7 +2743,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
           <header>
             <strong>Object correction state (${patches.length})</strong>
             <div class="preview-actions">
-              <button type="button" data-preview-original-record>Preview original object view</button>
+              <button type="button" data-enable-loaded-preview>Podgląd wczytanych danych</button>
               <button type="button" data-revert-record-patches>Restore object original values</button>
             </div>
           </header>
@@ -2735,7 +2759,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
           </table>
         </div>
       `;
-      host.querySelector("[data-preview-original-record]").addEventListener("click", () => openOriginalRecordPreview(recordType, data));
+      host.querySelector("[data-enable-loaded-preview]").addEventListener("click", () => enableLoadedDataPreview(recordType, data));
       host.querySelector("[data-revert-record-patches]").addEventListener("click", async () => {
         const ok = window.confirm(`Restore all active corrections for ${data.name || data.id}?`);
         if (!ok) return;
@@ -2754,23 +2778,6 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       if (recordType === "color") return renderColor(data, false);
       if (recordType === "color_group") return renderColorGroup(data);
       return `<div class="warn">Unsupported object preview.</div>`;
-    }
-
-    function openOriginalRecordPreview(recordType, data) {
-      const previous = state.readOnlyPreview;
-      state.readOnlyPreview = true;
-      const html = renderRecordForType(recordType, data);
-      state.readOnlyPreview = previous;
-      $("modalTitle").textContent = `Original view - ${data.name || data.id}`;
-      $("modalBody").classList.remove("is-field-editor");
-      $("modalBody").classList.add("is-original-preview");
-      $("modalBody").innerHTML = `
-        <div class="original-preview">
-          <div class="muted">This is the original object view without active data corrections applied. Nothing is restored or saved from this preview.</div>
-          ${html}
-        </div>
-      `;
-      $("modalBackdrop").hidden = false;
     }
 
     function refreshVisibleRecordPatchSummaries(recordType, data) {
@@ -2825,7 +2832,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
     }
 
     function fieldNoteButton(recordType, data, fieldKey, fieldLabel, currentValue = "") {
-      if (state.readOnlyPreview) return "";
+      if (isLoadedDataPreview(recordType, data?.id)) return "";
       if (!data || !fieldKey || !fieldLabel) return "";
       const activePatch = state.patchesByKey[patchKey(recordType, data.id, fieldKey)];
       return `<button class="field-note-button" type="button"
@@ -2848,6 +2855,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
 
     function applyPatchMarkers(root = document) {
       for (const button of root.querySelectorAll("[data-field-note]")) {
+        if (isLoadedDataPreview(button.dataset.recordType, button.dataset.recordId)) continue;
         const patch = state.patchesByKey[patchKey(button.dataset.recordType, button.dataset.recordId, button.dataset.fieldKey)];
         if (patch) markButtonPatched(button, patch.new_value);
       }
@@ -2909,7 +2917,6 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         current: dataset.fieldCurrent || "",
       };
       $("modalTitle").textContent = `Edit data field - ${field.label}`;
-      $("modalBody").classList.remove("is-original-preview");
       $("modalBody").classList.add("is-field-editor");
       $("modalBody").innerHTML = correctionPanel(recordType, data, field);
       $("modalBackdrop").hidden = false;
@@ -3045,7 +3052,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
 
     function closeModal() {
       $("modalBackdrop").hidden = true;
-      $("modalBody").classList.remove("is-field-editor", "is-original-preview");
+      $("modalBody").classList.remove("is-field-editor");
       $("modalBody").innerHTML = "";
     }
 
