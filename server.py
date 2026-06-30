@@ -999,11 +999,11 @@ def validation_intent(query: str) -> dict:
     relation = "missing"
     if any(token in normalized for token in all_rows_tokens) or "nie jest dla wszystkich" in normalized:
         relation = "missing_in_some_rows"
-    elif any(token in normalized for token in row_tokens):
+    elif any(token in normalized for token in missing_tokens) and any(token in normalized for token in row_tokens):
         relation = "missing_in_rows"
     return {
         "relation": relation,
-        "row_scope": relation in {"missing_in_rows", "missing_in_some_rows"} or any(token in normalized for token in row_tokens),
+        "row_scope": relation in {"missing_in_rows", "missing_in_some_rows"},
         "is_validation": any(token in normalized for token in missing_tokens) or relation != "missing",
     }
 
@@ -1014,6 +1014,8 @@ def infer_validation_field_from_query(query: str) -> dict | None:
     ignored = {
         "bez", "brak", "brakuje", "missing", "empty", "puste", "pusty", "not", "set", "nie", "ma",
         "wariant", "wariantow", "variant", "variants", "typoszereg", "sot", "wiersz", "row", "rows",
+        "maja", "wartosc", "wartosci", "jakies", "komorka", "komorkach", "cell", "cells",
+        "to",
     }
     field_tokens = [token for token in tokens if token not in ignored]
     if not field_tokens:
@@ -1035,6 +1037,8 @@ def data_query_tokens(query: str) -> list[str]:
     stop_words = {
         "znajdz", "znajdź", "pokaz", "pokaż", "wybierz", "wszystkie", "ktore", "które", "maja", "mają",
         "jest", "sa", "są", "oraz", "albo", "dla", "danych", "parametr", "parametry", "parametrach",
+        "ma", "wartosc", "wartosci", "jakies", "komorka", "komorkach", "cell", "cells",
+        "to",
         "produkty", "produkt", "kolory", "kolor", "visual", "attribute", "attributes",
     }
     return [
@@ -1055,6 +1059,18 @@ def parse_numeric_conditions(query: str) -> list[dict]:
     return conditions
 
 
+def parse_text_conditions(query: str) -> list[dict]:
+    normalized = normalize_query_text(query)
+    conditions = []
+    pattern = r"\b([a-z][\w.-]*(?:\s+[a-z][\w.-]*){0,3})\s*(?:=|:|jest|rowna sie|równa się)\s*\"?([\w./ -]{1,60})\"?"
+    for name, value in re.findall(pattern, normalized):
+        name = " ".join(data_query_tokens(name)) or name
+        value = value.strip(" .,:;")
+        if value and number_or_none(value) is None:
+            conditions.append({"name": name.strip(), "operator": "contains", "value": value})
+    return conditions
+
+
 def numeric_condition_matches(actual: object, operator: str, expected: float) -> bool:
     value = number_or_none(actual)
     if value is None:
@@ -1068,6 +1084,23 @@ def numeric_condition_matches(actual: object, operator: str, expected: float) ->
     if operator == "<=":
         return value <= expected
     return value == expected
+
+
+def text_condition_matches(actual: object, expected: str) -> bool:
+    return normalize_query_text(expected) in normalize_query_text(actual)
+
+
+def implicit_numeric_conditions_for_field(query: str, field: dict) -> list[dict]:
+    if parse_numeric_conditions(query):
+        return []
+    normalized = normalize_query_text(query)
+    if not field_matches_query(field, normalized):
+        return []
+    values = [number_or_none(item) for item in re.findall(r"(?<![a-z])-?\d+(?:[\.,]\d+)?(?![a-z])", normalized)]
+    values = [value for value in values if value is not None]
+    if len(values) != 1:
+        return []
+    return [{"name": field["key"], "operator": "=", "value": values[0]}]
 
 
 class PimData:
@@ -1172,6 +1205,9 @@ class PimData:
         validation_result = self.validation_query(question, model, limit)
         if validation_result:
             return validation_result
+        product_result = self.product_value_query(question, model, limit)
+        if product_result:
+            return product_result
         color_result = self.color_parameter_query(question, limit)
         if color_result:
             return color_result
@@ -1344,6 +1380,127 @@ class PimData:
             "findings": findings,
             "related_records": related_records,
         }
+
+    def product_value_query(self, question: str, model: dict | None = None, limit: int = 100) -> dict | None:
+        normalized = normalize_query_text(question)
+        if not any(token in normalized for token in ("produkt", "produkty", "product", "products")):
+            return None
+        numeric_conditions = parse_numeric_conditions(question)
+        text_conditions = parse_text_conditions(question)
+        normalized_model = normalize_validation_model(model)
+        fields = [field for field in normalized_model["fields"] if field.get("record_type") == "product" and field_matches_query(field, question)]
+        if not fields and (numeric_conditions or text_conditions):
+            condition_names = [condition["name"] for condition in [*numeric_conditions, *text_conditions]]
+            fields = [
+                field for field in normalized_model["fields"]
+                if field.get("record_type") == "product"
+                and any(field_matches_query(field, name) for name in condition_names)
+            ]
+        if not fields:
+            inferred_field = infer_validation_field_from_query(question)
+            if inferred_field and inferred_field.get("record_type") == "product":
+                fields = [inferred_field]
+        if not fields:
+            return None
+        field = fields[0]
+        if not numeric_conditions:
+            numeric_conditions = implicit_numeric_conditions_for_field(question, field)
+        has_positive_intent = any(token in normalized for token in ("ma ", "maja", "maja wartosc", "wartosc", "wartosci", "z ", "gdzie"))
+        if not has_positive_intent and not numeric_conditions and not text_conditions:
+            return None
+        findings = []
+        related_records = []
+        checked = 0
+        for product in self.products:
+            product_id = int(product["Id"])
+            detail = self.product_detail(product_id)
+            checked += 1
+            matches = self.product_field_matches_query(detail, field, numeric_conditions, text_conditions)
+            if not matches:
+                continue
+            findings.append(
+                {
+                    "type": "product",
+                    "id": product_id,
+                    "name": detail["name"],
+                    "field": field["label"],
+                    "issue": "matched",
+                    "message": self.product_value_match_summary(field, matches, numeric_conditions, text_conditions),
+                    "matches": matches[:8],
+                }
+            )
+            related_records.append({"type": "product", "id": product_id, "name": detail["name"], "mode": "products", "kind": "detail"})
+            if len(findings) >= limit:
+                break
+        answer = f"Data query: checked {checked} products and selected {len(findings)} records matching {field['label']}."
+        return {
+            "available": True,
+            "validation": True,
+            "query_type": "product_values",
+            "rule": {"field": field, "numeric_conditions": numeric_conditions, "text_conditions": text_conditions},
+            "question": question,
+            "answer": answer,
+            "findings": findings,
+            "related_records": related_records,
+        }
+
+    def product_field_matches_query(self, detail: dict, field: dict, numeric_conditions: list[dict], text_conditions: list[dict]) -> list[dict]:
+        values = self.product_field_values(detail, field)
+        present_values = [item for item in values if value_is_present(item.get("value"))]
+        if not present_values:
+            return []
+        if numeric_conditions:
+            matches = []
+            for item in present_values:
+                for condition in numeric_conditions:
+                    if self.condition_applies_to_field(condition, field) and numeric_condition_matches(item.get("value"), condition["operator"], condition["value"]):
+                        matches.append({**item, "condition": f"{condition['name']} {condition['operator']} {condition['value']}"})
+            return matches
+        if text_conditions:
+            matches = []
+            for item in present_values:
+                for condition in text_conditions:
+                    if self.condition_applies_to_field(condition, field) and text_condition_matches(item.get("value"), condition["value"]):
+                        matches.append({**item, "condition": f"{condition['name']} contains {condition['value']}"})
+            return matches
+        return present_values
+
+    def condition_applies_to_field(self, condition: dict, field: dict) -> bool:
+        aliases = [normalize_query_text(alias) for alias in field.get("aliases") or []]
+        name = normalize_query_text(condition.get("name"))
+        return not name or any(alias and (alias in name or name in alias or text_has_token(name, alias)) for alias in aliases)
+
+    def product_field_values(self, detail: dict, field: dict) -> list[dict]:
+        aliases = [normalize_query_text(alias) for alias in field.get("aliases") or []]
+        values = []
+        for item in detail.get("general") or []:
+            haystack = normalize_query_text(f"{item.get('label')} {item.get('attribute_name')} {item.get('attribute_id')}")
+            if any(alias and (alias in haystack or text_has_token(haystack, alias)) for alias in aliases):
+                values.append({"location": "general", "label": item.get("label"), "value": item.get("value")})
+        for feature in detail.get("features") or []:
+            haystack = normalize_query_text(feature.get("name"))
+            if any(alias and (alias in haystack or text_has_token(haystack, alias)) for alias in aliases):
+                values.append({"location": "features", "label": feature.get("name"), "value": feature.get("value")})
+        for row in [*(detail.get("sot") or []), *(detail.get("variants") or [])]:
+            row_number = row.get("row")
+            row_label = int(row_number) + 1 if isinstance(row_number, int) else row_number
+            for item in row.get("values") or []:
+                haystack = normalize_query_text(f"{item.get('label')} {item.get('attribute_name')} {item.get('attribute_id')}")
+                if any(alias and (alias in haystack or text_has_token(haystack, alias)) for alias in aliases):
+                    values.append({"location": "row", "row": row_label, "label": item.get("label"), "value": item.get("value")})
+        return values
+
+    def product_value_match_summary(self, field: dict, matches: list[dict], numeric_conditions: list[dict], text_conditions: list[dict]) -> str:
+        samples = []
+        for item in matches[:4]:
+            row = f"row {item.get('row')}: " if item.get("row") not in (None, "") else ""
+            samples.append(f"{row}{item.get('label')}: {item.get('value')}")
+        suffix = ""
+        if numeric_conditions:
+            suffix = " | conditions: " + ", ".join(f"{item['name']} {item['operator']} {item['value']}" for item in numeric_conditions)
+        elif text_conditions:
+            suffix = " | conditions: " + ", ".join(f"{item['name']} contains {item['value']}" for item in text_conditions)
+        return f"{field['label']} values: {', '.join(samples)}{suffix}"
 
     def color_parameter_query(self, question: str, limit: int = 100) -> dict | None:
         normalized = normalize_query_text(question)
