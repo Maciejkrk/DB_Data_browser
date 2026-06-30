@@ -2778,7 +2778,8 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
           new_value: newValue,
         });
         state.patchesByKey[saved.key] = saved;
-        markPatchedField(context.recordType, context.data.id, context.fieldKey, saved.new_value);
+        const savedDisplay = saved.new_display_value ?? displayPatchValue(saved.new_value, saved.field_info || info);
+        markPatchedField(context.recordType, context.data.id, context.fieldKey, saved.new_value, savedDisplay);
         refreshVisibleRecordPatchSummaries(context.recordType, context.data);
         refreshVisibleAppendProductPatches(context.recordType, context.data);
         renderPatchEditor(panel, saved, context);
@@ -2897,7 +2898,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
           delete valueNode.dataset.previewValue;
         }
         const patch = state.patchesByKey[patchKey(recordType, recordId, button.dataset.fieldKey)];
-        if (patch) markButtonPatched(button, patch.new_value);
+        if (patch) markButtonPatched(button, patch.new_value, patch.new_display_value || "");
         else {
           button.classList.remove("is-edited");
           button.textContent = "Edit value";
@@ -3046,6 +3047,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
     function fieldNoteButton(recordType, data, fieldKey, fieldLabel, currentValue = "", displayValue = "") {
       if (!data || !fieldKey || !fieldLabel) return "";
       const activePatch = state.patchesByKey[patchKey(recordType, data.id, fieldKey)];
+      const activePatchDisplay = activePatch ? activePatch.new_display_value ?? displayPatchValue(activePatch.new_value ?? "", activePatch.field_info || {}, displayValue || currentValue) : "";
       return `<button class="field-note-button" type="button"
         title="Edit data value and add note for this field"
         data-field-note
@@ -3055,7 +3057,8 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         data-field-key="${esc(fieldKey)}"
         data-field-label="${esc(fieldLabel)}"
         data-field-current="${esc(currentValue)}"
-        data-field-display-value="${esc(displayValue || currentValue)}">${activePatch ? "Edited" : "Edit value"}</button>`;
+        data-field-display-value="${esc(displayValue || currentValue)}"
+        data-patch-display-value="${esc(activePatchDisplay)}">${activePatch ? "Edited" : "Edit value"}</button>`;
     }
 
     function attachFieldNoteButtons(root = document) {
@@ -3103,14 +3106,15 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
     function applyActiveRecordCorrections(recordType, recordId) {
       if (isLoadedDataPreview(recordType, recordId)) return;
       for (const patch of activeRecordPatches(recordType, recordId)) {
-        markPatchedField(recordType, recordId, patch.field_key, patch.new_value);
+        markPatchedField(recordType, recordId, patch.field_key, patch.new_value, patch.new_display_value || "");
       }
     }
 
-    function markPatchedField(recordType, recordId, fieldKey, value) {
+    function markPatchedField(recordType, recordId, fieldKey, value, displayValue = "") {
       for (const button of document.querySelectorAll("[data-field-note]")) {
         if (button.dataset.recordType === String(recordType) && button.dataset.recordId === String(recordId) && button.dataset.fieldKey === String(fieldKey)) {
-          markButtonPatched(button, value);
+          if (displayValue) button.dataset.patchDisplayValue = displayValue;
+          markButtonPatched(button, value, displayValue);
         }
       }
     }
@@ -3131,7 +3135,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       }
     }
 
-    function markButtonPatched(button, value) {
+    function markButtonPatched(button, value, displayValue = "") {
       button.classList.add("is-edited");
       button.textContent = "Edited";
       const valueNode = editableValueNode(button);
@@ -3140,7 +3144,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         const info = patch?.field_info || {};
         const fallbackDisplay = button.dataset.fieldDisplayValue || "";
         valueNode.classList.add("edited-value");
-        valueNode.textContent = patch?.new_display_value ?? displayPatchValue(value, info, fallbackDisplay) ?? "";
+        valueNode.textContent = displayValue || button.dataset.patchDisplayValue || patch?.new_display_value || displayPatchValue(value, info, fallbackDisplay) || "";
       }
       const fieldNode = button.closest(".field");
       if (fieldNode) fieldNode.classList.add("edited-field");
