@@ -2516,6 +2516,14 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       attachFieldNoteButtons();
     }
 
+    async function fetchRecordData(recordType, recordId) {
+      if (recordType === "product") return api(`/api/products/${recordId}`);
+      if (recordType === "system") return api(`/api/systems/${recordId}`);
+      if (recordType === "color") return api(`/api/colors/${recordId}`);
+      if (recordType === "color_group") return api(`/api/color-groups/${recordId}`);
+      throw new Error("Unsupported record type");
+    }
+
     function renderProduct(data) {
       return `
         ${navigationBackControl()}
@@ -2602,7 +2610,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       if (!fieldKey && isLoadedDataPreview(recordType, data.id)) {
         return `<div class="correction-panel loaded-data-preview" data-correction-panel data-record-type="${esc(recordType)}" data-record-id="${esc(data.id)}">
           <div class="field">
-            <div class="field-label">Loaded data preview</div>
+            <div class="field-label">Original data preview</div>
             <div class="field-value muted">Original values from the imported files are shown. Editing is disabled in this preview.</div>
           </div>
           <button type="button" data-disable-loaded-preview>Exit preview and continue editing</button>
@@ -2729,12 +2737,12 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
 
     async function enableLoadedDataPreview(recordType, data) {
       state.loadedDataPreviewKey = recordPreviewKey(recordType, data.id);
-      await renderRecordIntoDetail(recordType, data);
+      await renderRecordIntoDetail(recordType, await fetchRecordData(recordType, data.id));
     }
 
     async function disableLoadedDataPreview(recordType, data) {
       if (isLoadedDataPreview(recordType, data.id)) state.loadedDataPreviewKey = "";
-      await renderRecordIntoDetail(recordType, data);
+      await renderRecordIntoDetail(recordType, await fetchRecordData(recordType, data.id));
     }
 
     function activeRecordPatches(recordType, recordId) {
@@ -2756,7 +2764,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
           <header>
             <strong>Object correction state (${patches.length})</strong>
             <div class="preview-actions">
-              <button type="button" data-enable-loaded-preview>Loaded data preview</button>
+              <button type="button" data-enable-loaded-preview>Original data preview</button>
               <button type="button" data-revert-record-patches>Restore object original values</button>
             </div>
           </header>
