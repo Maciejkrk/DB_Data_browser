@@ -3423,9 +3423,7 @@ def make_store_handler(store: DataStore):
                     _, record_type, record_id = parsed.path.rsplit("/", 2)
                     field_key = qs.get("field_key", [""])[0]
                     payload = store.patches.get_patch(unquote(record_type), int(unquote(record_id)), field_key)
-                    if not payload.get("active"):
-                        field_info = self.ready_data().edit_field_info(unquote(record_type), int(unquote(record_id)), field_key)
-                        payload = {**payload, "field_info": field_info, "field_label": field_info.get("field_label"), "original_value": field_info.get("current_value")}
+                    payload = store.patches.hydrate_patch(payload, self.ready_data())
                 elif parsed.path == "/api/notes/export":
                     self.send_download(store.notes.load(), "browser_corrections.json")
                     return
