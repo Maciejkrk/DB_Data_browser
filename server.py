@@ -2123,8 +2123,11 @@ class PimData:
             name = (values.get("attribute_name") or {}).get("value")
             value_item = values.get("value") or values.get("www_value")
             value = value_item.get("value") if value_item else ""
-            prefix = (values.get("field_prefix") or {}).get("value") or ""
-            suffix = (values.get("field_suffix") or {}).get("value") or ""
+            name_item = values.get("attribute_name") or {}
+            prefix_item = values.get("field_prefix") or {}
+            suffix_item = values.get("field_suffix") or {}
+            prefix = prefix_item.get("value") or ""
+            suffix = suffix_item.get("value") or ""
             if not name and not value:
                 continue
             features.append(
@@ -2134,6 +2137,10 @@ class PimData:
                     "value": value,
                     "suffix": suffix,
                     "row": row.get("row"),
+                    "name_attribute_id": name_item.get("attribute_id"),
+                    "value_attribute_id": value_item.get("attribute_id") if value_item else None,
+                    "prefix_attribute_id": prefix_item.get("attribute_id"),
+                    "suffix_attribute_id": suffix_item.get("attribute_id"),
                 }
             )
         return features

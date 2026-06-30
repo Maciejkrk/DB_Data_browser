@@ -842,7 +842,7 @@
         <button id="appForwardBtn" class="source-button" type="button" disabled>Forward</button>
       </div>
       <button id="projectBtn" class="source-button" type="button">Review project</button>
-      <button id="validationModelBtn" class="source-button" type="button">Data model</button>
+      <button id="validationModelBtn" class="source-button" type="button">Validation rules</button>
       <button id="exportCorrectedBtn" class="source-button" type="button">Export corrected data</button>
       <button id="changeSourceBtn" class="source-button" type="button">Change source files</button>
     </div>
@@ -1229,7 +1229,7 @@
     }
 
     async function changeSourceFiles() {
-      const ok = window.confirm("Start a new data browsing project? This clears the uploaded source files, local notes, data corrections and the optional data model. Original JSON files outside this browser are not changed.");
+      const ok = window.confirm("Start a new data browsing project? This clears the uploaded source files, local notes, data corrections and optional validation rules. Original JSON files outside this browser are not changed.");
       if (!ok) return;
       const response = await fetch("/api/source/clear", {
         method: "POST",
@@ -1303,14 +1303,14 @@
 
     function openValidationModelModal() {
       const model = state.validationModel || { fields: [] };
-      $("modalTitle").textContent = "Data model";
+      $("modalTitle").textContent = "Validation rules";
       $("modalBody").innerHTML = `
         <div class="project-form">
           <div class="field">
             <div class="field-label">Loaded fields</div>
             <div class="field-value">${esc((model.fields || []).length)} fields${model.configured ? `\n${esc(model.model_file || "")}` : "\nBuilt-in defaults only"}</div>
           </div>
-          <label>Model JSON
+          <label>Rules JSON
             <textarea id="validationModelJsonInput" spellcheck="false">${esc(JSON.stringify({ fields: model.fields || [] }, null, 2))}</textarea>
           </label>
           <label>Import from page URL
@@ -1335,12 +1335,12 @@
     async function saveValidationModelJson() {
       const status = $("validationModelStatus");
       try {
-        status.textContent = "Saving data model...";
+        status.textContent = "Saving validation rules...";
         const payload = JSON.parse($("validationModelJsonInput").value || "{}");
         state.validationModel = await apiPost("/api/validation/model", payload);
-        status.textContent = `Data model saved. Fields: ${(state.validationModel.fields || []).length}.`;
+        status.textContent = `Validation rules saved. Fields: ${(state.validationModel.fields || []).length}.`;
       } catch (error) {
-        status.textContent = error.message || "Could not save data model.";
+        status.textContent = error.message || "Could not save validation rules.";
       }
     }
 
@@ -1349,7 +1349,7 @@
       const status = $("validationModelStatus");
       if (!input.files.length) return;
       try {
-        status.textContent = "Importing data model...";
+        status.textContent = "Importing validation rules...";
         const file = input.files[0];
         const text = await file.text();
         let payload;
@@ -1361,9 +1361,9 @@
         state.validationModel = await apiPost("/api/validation/model", payload);
         input.value = "";
         openValidationModelModal();
-        $("validationModelStatus").textContent = `Data model imported. Fields: ${(state.validationModel.fields || []).length}.`;
+        $("validationModelStatus").textContent = `Validation rules imported. Fields: ${(state.validationModel.fields || []).length}.`;
       } catch (error) {
-        status.textContent = error.message || "Could not import data model.";
+        status.textContent = error.message || "Could not import validation rules.";
         input.value = "";
       }
     }
@@ -1376,12 +1376,12 @@
         return;
       }
       try {
-        status.textContent = "Loading data model from URL...";
+        status.textContent = "Loading validation rules from URL...";
         state.validationModel = await apiPost("/api/validation/model", { url });
         openValidationModelModal();
-        $("validationModelStatus").textContent = `Data model loaded. Fields: ${(state.validationModel.fields || []).length}.`;
+        $("validationModelStatus").textContent = `Validation rules loaded. Fields: ${(state.validationModel.fields || []).length}.`;
       } catch (error) {
-        status.textContent = error.message || "Could not load data model from URL.";
+        status.textContent = error.message || "Could not load validation rules from URL.";
       }
     }
 
@@ -2531,7 +2531,8 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
     function correctionPanel(recordType, data, field = {}) {
       const fieldKey = field.key || "";
       const fieldLabel = field.label || "";
-      return `<div class="correction-panel" data-correction-panel data-record-type="${esc(recordType)}" data-record-id="${esc(data.id)}" data-record-name="${esc(data.name)}" data-field-key="${esc(fieldKey)}" data-field-label="${esc(fieldLabel)}">
+      const fieldCurrent = field.current ?? "";
+      return `<div class="correction-panel" data-correction-panel data-record-type="${esc(recordType)}" data-record-id="${esc(data.id)}" data-record-name="${esc(data.name)}" data-field-key="${esc(fieldKey)}" data-field-label="${esc(fieldLabel)}" data-field-current="${esc(fieldCurrent)}">
         ${fieldLabel ? `<div class="field"><div class="field-label">Edited field</div><div class="field-value">${esc(fieldLabel)}</div></div>` : ""}
         ${fieldLabel ? `<div data-patch-editor class="field"><div class="field-label">Edit data value</div><div class="field-value muted">Loading editable value...</div></div>` : ""}
         ${fieldLabel ? "" : `<div class="muted">Edit values directly with the Edit value buttons next to fields and table cells.</div>`}
@@ -2551,6 +2552,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       if (!panel) return;
       const fieldKey = panel.dataset.fieldKey || "";
       const fieldLabel = panel.dataset.fieldLabel || "";
+      const fieldCurrent = panel.dataset.fieldCurrent || "";
       const note = await api(`/api/notes/${recordType}/${data.id}${fieldKey ? `?field_key=${encodeURIComponent(fieldKey)}` : ""}`);
       const patch = fieldKey ? await api(`/api/patches/${recordType}/${data.id}?field_key=${encodeURIComponent(fieldKey)}`) : null;
       const acceptedInput = panel.querySelector("[data-record-accepted]");
@@ -2559,7 +2561,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       panel.querySelector("[data-correction-resolved]").checked = Boolean(note.resolved);
       panel.querySelector("[data-correction-comment]").value = note.comment || "";
       renderAttachments(panel, note.attachments || []);
-      if (patch) renderPatchEditor(panel, patch, { recordType, data, fieldKey, fieldLabel });
+      if (patch) renderPatchEditor(panel, patch, { recordType, data, fieldKey, fieldLabel, fieldCurrent });
       panel.querySelector("[data-save-correction]").addEventListener("click", async () => {
         const attachment = await selectedAttachmentPayload(panel.querySelector("[data-correction-attachment]"));
         const payload = {
@@ -2587,7 +2589,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       const host = panel.querySelector("[data-patch-editor]");
       if (!host) return;
       const info = patch.field_info || {};
-      const original = patch.original_value ?? info.current_value ?? "";
+      const original = patch.original_value ?? info.current_value ?? context.fieldCurrent ?? "";
       const current = patch.active ? patch.new_value : original;
       host.innerHTML = `
         <div class="field-label">Edit data value</div>
@@ -2670,7 +2672,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       return input.value;
     }
 
-    function fieldNoteButton(recordType, data, fieldKey, fieldLabel) {
+    function fieldNoteButton(recordType, data, fieldKey, fieldLabel, currentValue = "") {
       if (!data || !fieldKey || !fieldLabel) return "";
       const activePatch = state.patchesByKey[patchKey(recordType, data.id, fieldKey)];
       return `<button class="field-note-button" type="button"
@@ -2680,7 +2682,8 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         data-record-id="${esc(data.id)}"
         data-record-name="${esc(data.name)}"
         data-field-key="${esc(fieldKey)}"
-        data-field-label="${esc(fieldLabel)}">${activePatch ? "Edited" : "Edit value"}</button>`;
+        data-field-label="${esc(fieldLabel)}"
+        data-field-current="${esc(currentValue)}">${activePatch ? "Edited" : "Edit value"}</button>`;
     }
 
     function attachFieldNoteButtons(root = document) {
@@ -2737,7 +2740,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       const tableCell = button.closest(".table-cell-note");
       if (tableCell) return tableCell.querySelector("[data-field-display]") || tableCell.querySelector("span");
       const field = button.closest(".field");
-      if (field) return field.querySelector(".field-value");
+      if (field) return field.querySelector("[data-field-display]") || field.querySelector(".field-value");
       return null;
     }
 
@@ -2750,6 +2753,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       const field = {
         key: dataset.fieldKey || "",
         label: dataset.fieldLabel || "",
+        current: dataset.fieldCurrent || "",
       };
       $("modalTitle").textContent = `Edit data field - ${field.label}`;
       $("modalBody").innerHTML = correctionPanel(recordType, data, field);
@@ -2781,7 +2785,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
 
     function colorParameterTable(data, recordType = "color", record = data) {
       const params = new Map((data.parameters || []).map((item) => [String(item.name), item.value]));
-      const row = (label, value) => `<tr><td><strong>${esc(label)}</strong> ${fieldNoteButton(recordType, record, `parameter:${label}`, label)}</td><td>${esc(value)}</td></tr>`;
+      const row = (label, value) => `<tr><td><strong>${esc(label)}</strong></td><td><div class="table-cell-note"><span>${esc(value)}</span>${fieldNoteButton(recordType, record, `parameter:${label}`, label, value)}</div></td></tr>`;
       const rows = [];
       if (data.type === "advanced") {
         rows.push(row("Name", data.name));
@@ -3243,10 +3247,10 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
           <thead><tr><th>Feature</th><th>Value</th><th>Prefix</th><th>Suffix / unit</th></tr></thead>
           <tbody>${features.map((item) => `
             <tr>
-              <td><strong>${esc(item.name)}</strong> ${fieldNoteButton(recordType, data, `feature:${item.name}`, item.name)}</td>
-              <td>${esc(item.value)} ${fieldNoteButton(recordType, data, `feature:${item.name}:value`, `${item.name} / value`)}</td>
-              <td>${esc(item.prefix || "")} ${fieldNoteButton(recordType, data, `feature:${item.name}:prefix`, `${item.name} / prefix`)}</td>
-              <td>${esc(item.suffix || "")} ${fieldNoteButton(recordType, data, `feature:${item.name}:suffix`, `${item.name} / suffix`)}</td>
+              <td><strong>${esc(item.name)}</strong></td>
+              <td><div class="table-cell-note"><span>${esc(item.value)}</span>${item.value_attribute_id ? fieldNoteButton(recordType, data, `table:Raw custom attributes:row:${item.row ?? ""}:column:${item.value_attribute_id}`, `${item.name} / value`, item.value) : ""}</div></td>
+              <td>${esc(item.prefix || "")}</td>
+              <td>${esc(item.suffix || "")}</td>
             </tr>
           `).join("")}</tbody>
         </table>
@@ -3262,9 +3266,9 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
             <thead><tr><th>Selection</th><th>Type</th><th>Selected values</th></tr></thead>
             <tbody>${items.map((item) => `
               <tr>
-                <td><strong>${esc(item.label)}</strong> ${fieldNoteButton(recordType, data, `selector:${item.attribute_id}`, item.label)}</td>
+                <td><strong>${esc(item.label)}</strong></td>
                 <td>${esc(item.selector_type || item.attribute_type || "")}</td>
-                <td>${esc((item.values || []).join(", "))}</td>
+                <td><div class="table-cell-note"><span>${esc((item.values || []).join(", "))}</span>${fieldNoteButton(recordType, data, `selector:${item.attribute_id}`, item.label, (item.values || []).join(", "))}</div></td>
               </tr>
             `).join("")}</tbody>
           </table>
@@ -3291,7 +3295,8 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
                   const rowLabel = Number.isFinite(Number(row.row)) ? Number(row.row) + 1 : row.row;
                   const label = `${title} / row ${rowLabel} / ${column.label}`;
                   const key = `table:${title}:row:${row.row ?? ""}:column:${column.key}`;
-                  return `<td><div class="table-cell-note"><span>${esc(row.values[column.key] ?? "")}</span>${fieldNoteButton(recordType, data, key, label)}</div></td>`;
+                  const value = row.values[column.key] ?? "";
+                  return `<td><div class="table-cell-note"><span>${esc(value)}</span>${fieldNoteButton(recordType, data, key, label, value)}</div></td>`;
                 }).join("")}
               </tr>
             `).join("")}</tbody>
@@ -3307,8 +3312,8 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         <div class="grid">
           ${rows.flatMap((row) => row.values || []).filter((item) => item.value !== true).map((item) => `
             <div class="field">
-              <div class="field-label"><span>${esc(item.label)}</span>${fieldNoteButton(recordType, data, `${title}:${item.label}`, item.label)}</div>
-              <div class="field-value">${esc(item.value)}</div>
+              <div class="field-label"><span>${esc(item.label)}</span></div>
+              <div class="field-value"><span data-field-display>${esc(item.value)}</span> ${fieldNoteButton(recordType, data, `${title}:${item.label}`, item.label, item.value)}</div>
             </div>
           `).join("")}
         </div>
@@ -3325,9 +3330,9 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
               <thead><tr><th>Position</th><th>Layer</th><th>Product / variant</th></tr></thead>
               <tbody>${(variant.layers || []).map((layer) => `
                 <tr>
-                  <td>${esc(layer.position || layer.row)} ${fieldNoteButton("system", data, `variant:${variant.name}:row:${layer.row}:position`, `${variant.name} / row ${layer.row} / position`)}</td>
-                  <td><strong>${esc(layer.name)}</strong> ${fieldNoteButton("system", data, `variant:${variant.name}:row:${layer.row}:layer`, `${variant.name} / row ${layer.row} / layer`)}</td>
-                  <td>${productSelector(layer.products || [])} ${fieldNoteButton("system", data, `variant:${variant.name}:row:${layer.row}:products`, `${variant.name} / row ${layer.row} / products`)}</td>
+                  <td>${esc(layer.position || layer.row)}</td>
+                  <td><strong>${esc(layer.name)}</strong></td>
+                  <td>${productSelector(layer.products || [])} ${fieldNoteButton("system", data, `variant:${variant.name}:row:${layer.row}:products`, `${variant.name} / row ${layer.row} / products`, (layer.products || []).map((item) => item.product_name || item.product_id).join(", "))}</td>
                 </tr>
               `).join("")}</tbody>
             </table>
@@ -3364,8 +3369,8 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
     function fieldGrid(items, recordType = "", data = null, scope = "field") {
       return `<div class="grid">${(items || []).map((item) => `
         <div class="field">
-          <div class="field-label"><span>${esc(item.label)}</span>${fieldNoteButton(recordType, data, `${scope}:${item.label}`, item.label)}</div>
-          <div class="field-value">${esc(item.value)}</div>
+          <div class="field-label"><span>${esc(item.label)}</span></div>
+          <div class="field-value"><span data-field-display>${esc(item.value)}</span> ${fieldNoteButton(recordType, data, `${scope}:${item.label}`, item.label, item.value)}</div>
         </div>
       `).join("")}</div>`;
     }
@@ -3379,7 +3384,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
           <tbody>${rows.map((row) => `
             <tr>
               <td>${esc(row.row)}</td>
-              <td>${row.values.map((item) => `<strong>${esc(item.label)}:</strong> ${esc(item.value)} ${fieldNoteButton(recordType, data, `${title}:row:${row.row}:${item.label}`, `${title} / row ${row.row} / ${item.label}`)}`).join("<br>")}</td>
+              <td>${row.values.map((item) => `<strong>${esc(item.label)}:</strong> ${esc(item.value)} ${fieldNoteButton(recordType, data, `${title}:row:${row.row}:${item.label}`, `${title} / row ${row.row} / ${item.label}`, item.value)}`).join("<br>")}</td>
             </tr>
           `).join("")}</tbody>
         </table>
@@ -3394,8 +3399,8 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
           <thead><tr><th>Name</th><th>Address</th></tr></thead>
           <tbody>${files.map((file) => `
             <tr>
-              <td>${esc(file.uploadedfileName || file.fileName || file.AttributeId)} ${fieldNoteButton(recordType, data, `files:${file.AttributeId || file.fileName}:name`, `Files / ${file.uploadedfileName || file.fileName || file.AttributeId}`)}</td>
-              <td><a href="${esc(file.fileUrl)}" target="_blank" rel="noreferrer">${esc(file.fileUrl)}</a> ${fieldNoteButton(recordType, data, `files:${file.AttributeId || file.fileName}:url`, `Files / ${file.uploadedfileName || file.fileName || file.AttributeId} / URL`)}</td>
+              <td>${esc(file.uploadedfileName || file.fileName || file.AttributeId)}</td>
+              <td><a href="${esc(file.fileUrl)}" target="_blank" rel="noreferrer">${esc(file.fileUrl)}</a> ${fieldNoteButton(recordType, data, `files:${file.AttributeId || file.fileName}:url`, `Files / ${file.uploadedfileName || file.fileName || file.AttributeId} / URL`, file.fileUrl)}</td>
             </tr>
           `).join("")}</tbody>
         </table>
