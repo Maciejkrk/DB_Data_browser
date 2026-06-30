@@ -598,8 +598,15 @@ def rows_for_parent(all_attrs: list[dict], parent_id: int, attr_defs: dict[int, 
         key = (int(item["row"] or 0), str(item.get("parent_hash") or ""))
         grouped.setdefault(key, []).append(item)
     rows = []
-    for (row_index, row_hash), items in sorted(grouped.items()):
-        rows.append({"row": row_index, "hash": str((items[0] or {}).get("hash") or row_hash), "values": items})
+    for (row_index, parent_hash), items in sorted(grouped.items()):
+        rows.append(
+            {
+                "row": row_index,
+                "hash": str((items[0] or {}).get("hash") or parent_hash),
+                "parent_hash": parent_hash,
+                "values": items,
+            }
+        )
     return rows
 
 
@@ -618,6 +625,28 @@ def rows_for_parents(all_attrs: list[dict], parent_ids: list[int], attr_defs: di
 
 def row_map(row: dict) -> dict[str, dict]:
     return {str(item.get("attribute_name") or item.get("attribute_id")): item for item in row.get("values") or []}
+
+
+def model_array_attributes(attr_defs: dict[int, dict], model_id: int | None) -> list[tuple[int, dict]]:
+    if model_id is None:
+        return []
+    items = []
+    for attr_id, attr_def in attr_defs.items():
+        if attr_is_deleted(attr_def):
+            continue
+        if int(attr_def.get("ProductModelId") or 0) != int(model_id):
+            continue
+        if str(attr_def.get("AttributeType") or "").lower() != "model_array":
+            continue
+        items.append((int(attr_def.get("DisplayOrder") or 0), attr_id, attr_def))
+    return [(attr_id, attr_def) for _, attr_id, attr_def in sorted(items)]
+
+
+def row_display_name(row: dict, fallback: str = "") -> str:
+    for item in row.get("values") or []:
+        if item.get("value") not in (None, "", False):
+            return str(item.get("value"))
+    return fallback or f"Row {row.get('row')}"
 
 
 def field_value(row: dict, key: str, default: object = "") -> object:
@@ -1226,6 +1255,7 @@ class PimData:
     def __init__(self, data_dir: Path) -> None:
         self.data_dir = data_dir
         self.product_models = load_json_if_exists(data_dir / "productsModels.json", {"models": []})
+        self.element_models = load_json_if_exists(data_dir / "buildingsElementsModels.json", {"models": []})
         self.product_attr_defs, _ = attribute_maps(load_json_if_exists(data_dir / "productsAttributes.json", {"attributes": []}))
         self.element_attr_defs, _ = attribute_maps(load_json_if_exists(data_dir / "buildingsElementsAttributes.json", {"attributes": []}))
         self.products = load_json_if_exists(data_dir / "products.json", {"products": []}).get("products", [])
@@ -1242,6 +1272,7 @@ class PimData:
             "product_ids": find_attribute_ids(self.element_attr_defs, ("product", "produkt"), ("product",), [290]),
             "default_ids": find_attribute_ids(self.element_attr_defs, ("default", "domyśl"), ("boolean",), [298]),
         }
+        self.element_root_model_id = self.building_element_root_model_id()
         self.product_index = {int(product["Id"]): product for product in self.products}
         self.element_index = {int(element["Id"]): element for element in self.elements}
         self.color_index = {int(color["Id"]): color for color in self.colors}
@@ -1253,6 +1284,55 @@ class PimData:
             for color_id in version.get("colorList") or []:
                 self.color_group_members.setdefault(int(color_id), []).append(group_id)
         self.product_color_usage = self.build_product_color_usage()
+
+    def building_element_root_model_id(self) -> int | None:
+        for model in self.element_models.get("models") or []:
+            if normalize_query_text(model.get("modelType")) == "building_element":
+                return int(model.get("Id"))
+        root_ids = {
+            int(attr.get("ProductModelId") or 0)
+            for attr in self.element_attr_defs.values()
+            if int(attr.get("ParentAttributeId") or 0) == 0 and attr.get("ProductModelId") is not None
+        }
+        return min(root_ids) if root_ids else None
+
+    def model_tree(self, record: dict, attr_defs: dict[int, dict], root_model_id: int | None) -> list[dict]:
+        attrs = latest_attrs(record)
+
+        def build_array(array_attr_id: int, array_attr_def: dict, parent_hash: str = "") -> dict:
+            rows = [
+                row for row in rows_for_parent(attrs, array_attr_id, attr_defs)
+                if str(row.get("parent_hash") or "") == str(parent_hash or "")
+            ]
+            target_model_id = int(array_attr_def.get("TargetModelId") or 0) or None
+            child_arrays = model_array_attributes(attr_defs, target_model_id)
+            row_nodes = []
+            for row in rows:
+                fields = [
+                    item for item in row.get("values") or []
+                    if str((attr_defs.get(int(item.get("attribute_id") or 0)) or {}).get("AttributeType") or "").lower() != "model_array"
+                ]
+                row_hash = str(row.get("hash") or "")
+                row_nodes.append(
+                    {
+                        "row": row.get("row"),
+                        "hash": row_hash,
+                        "label": row_display_name(row, f"{attr_label(array_attr_def, array_attr_id)} {row.get('row')}"),
+                        "fields": fields,
+                        "children": [build_array(child_attr_id, child_attr_def, row_hash) for child_attr_id, child_attr_def in child_arrays],
+                    }
+                )
+            return {
+                "attribute_id": array_attr_id,
+                "label": attr_label(array_attr_def, array_attr_id),
+                "target_model_id": target_model_id,
+                "rows": row_nodes,
+            }
+
+        return [
+            build_array(attr_id, attr_def, "")
+            for attr_id, attr_def in model_array_attributes(attr_defs, root_model_id)
+        ]
 
     def summary(self) -> dict:
         consistency = self.consistency_report()
@@ -2312,6 +2392,7 @@ class PimData:
                 "variants": variant_rows,
                 "layers": layer_rows,
                 "available_products": available_rows,
+                "model_tree": self.model_tree(element, self.element_attr_defs, self.element_root_model_id),
                 "system_variants": self.system_variants(variant_rows, layer_rows, available_rows),
                 "files": latest_version.get("filesAttributes", []),
                 "media": file_media(latest_version),

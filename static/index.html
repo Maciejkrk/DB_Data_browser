@@ -686,6 +686,47 @@
       background: var(--ink-soft);
       font-size: 15px;
     }
+    .model-tree {
+      display: grid;
+      gap: 12px;
+    }
+    .model-tree-node {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      overflow: hidden;
+    }
+    .model-tree-node > header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 9px 11px;
+      background: var(--ink-soft);
+      border-bottom: 1px solid var(--line);
+      font-weight: 800;
+    }
+    .model-tree-rows {
+      display: grid;
+      gap: 10px;
+      padding: 10px;
+    }
+    .model-tree-row {
+      display: grid;
+      gap: 8px;
+      padding-left: 10px;
+      border-left: 3px solid #d0d5dd;
+    }
+    .model-tree-fields {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 8px;
+    }
+    .model-tree-children {
+      display: grid;
+      gap: 8px;
+      margin-left: 12px;
+    }
     .product-choice {
       display: grid;
       gap: 4px;
@@ -2578,7 +2619,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         ${mediaGrid(data.media)}
         ${selectionAttributesTable(data.selection_attributes, "system", data)}
         ${fieldGrid(data.general, "system", data, "general")}
-        ${systemVariants(data.system_variants, data)}
+        ${modelTree(data.model_tree, "system", data) || systemVariants(data.system_variants, data)}
         ${filesSection(data.files || [], "system", data)}
       `;
     }
@@ -3607,6 +3648,57 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
           </div>
         </div>
       `).join("");
+    }
+
+    function modelTree(nodes, recordType = "", data = null) {
+      if (!nodes || !nodes.length) return "";
+      return `<details open>
+        <summary>Model tree</summary>
+        <div class="model-tree">${nodes.map((node) => modelTreeNode(node, recordType, data, 1)).join("")}</div>
+      </details>`;
+    }
+
+    function modelTreeNode(node, recordType = "", data = null, level = 1) {
+      const rows = node.rows || [];
+      return `<section class="model-tree-node" data-model-level="${esc(level)}">
+        <header>
+          <span>${esc(node.label || "Model array")}</span>
+          <span class="muted">Level ${esc(level)} / ${esc(rows.length)} item${rows.length === 1 ? "" : "s"}</span>
+        </header>
+        <div class="model-tree-rows">
+          ${rows.map((row) => modelTreeRow(row, recordType, data, level)).join("") || `<div class="muted">No items.</div>`}
+        </div>
+      </section>`;
+    }
+
+    function modelTreeRow(row, recordType = "", data = null, level = 1) {
+      return `<div class="model-tree-row">
+        <strong>${esc(row.label || `Row ${row.row}`)}</strong>
+        ${modelTreeFields(row.fields || [], recordType, data)}
+        ${(row.children || []).length ? `<div class="model-tree-children">${row.children.map((child) => modelTreeNode(child, recordType, data, level + 1)).join("")}</div>` : ""}
+      </div>`;
+    }
+
+    function modelTreeFields(fields, recordType = "", data = null) {
+      if (!fields.length) return "";
+      return `<div class="model-tree-fields">${fields.map((field) => modelTreeField(field, recordType, data)).join("")}</div>`;
+    }
+
+    function modelTreeField(field, recordType = "", data = null) {
+      const label = field.label || field.attribute_name || field.attribute_id;
+      const value = field.value ?? "";
+      const key = `table:Model tree:attr_index:${field.attr_index}`;
+      const raw = field.raw || {};
+      const productId = raw.IntValue;
+      const productVariant = raw.IntValue2;
+      const displayValue = productId ? `${productId}${productVariant ? ` (${productVariant})` : ""}` : value;
+      const valueHtml = String((field.attribute_name || "")).toLowerCase() === "product" || productId
+        ? `${productId ? `<button class="product-chip" type="button" data-linked-product-id="${esc(productId)}">${esc(displayValue)}</button>` : esc(displayValue)}`
+        : esc(value);
+      return `<div class="field">
+        <div class="field-label"><span>${esc(label)}</span></div>
+        <div class="field-value"><span data-field-display>${valueHtml}</span> ${fieldNoteButton(recordType, data, key, label, displayValue)}</div>
+      </div>`;
     }
 
     function productSelector(products, data = null, variant = {}, layer = {}) {
