@@ -936,7 +936,7 @@ def builtin_validation_fields() -> list[dict]:
             "label": "Products",
             "record_type": "system",
             "locations": ["products"],
-            "aliases": ["product", "products", "produkt", "produkty"],
+            "aliases": ["assigned products", "available products", "layer products", "przypisane produkty", "dostepne produkty", "produkty w warstwach"],
         },
     ]
 
@@ -1006,6 +1006,68 @@ def validation_intent(query: str) -> dict:
         "row_scope": relation in {"missing_in_rows", "missing_in_some_rows"} or any(token in normalized for token in row_tokens),
         "is_validation": any(token in normalized for token in missing_tokens) or relation != "missing",
     }
+
+
+def infer_validation_field_from_query(query: str) -> dict | None:
+    normalized = normalize_query_text(query)
+    tokens = data_query_tokens(query)
+    ignored = {
+        "bez", "brak", "brakuje", "missing", "empty", "puste", "pusty", "not", "set", "nie", "ma",
+        "wariant", "wariantow", "variant", "variants", "typoszereg", "sot", "wiersz", "row", "rows",
+    }
+    field_tokens = [token for token in tokens if token not in ignored]
+    if not field_tokens:
+        return None
+    phrase = " ".join(field_tokens[:6])
+    record_type = "system" if any(token in normalized for token in ("system", "systemy", "building element", "element")) else "product"
+    return normalize_validation_field(
+        {
+            "key": phrase.replace(" ", "_"),
+            "label": phrase,
+            "record_type": record_type,
+            "locations": ["general", "features", "sot"],
+            "aliases": [phrase, *field_tokens],
+        }
+    )
+
+
+def data_query_tokens(query: str) -> list[str]:
+    stop_words = {
+        "znajdz", "znajdź", "pokaz", "pokaż", "wybierz", "wszystkie", "ktore", "które", "maja", "mają",
+        "jest", "sa", "są", "oraz", "albo", "dla", "danych", "parametr", "parametry", "parametrach",
+        "produkty", "produkt", "kolory", "kolor", "visual", "attribute", "attributes",
+    }
+    return [
+        token for token in re.findall(r"[\w.-]+", normalize_query_text(query))
+        if len(token) > 1 and token not in stop_words
+    ]
+
+
+def parse_numeric_conditions(query: str) -> list[dict]:
+    normalized = normalize_query_text(query)
+    conditions = []
+    pattern = r"\b([a-z][\w.-]*)\s*(>=|<=|>|<|=|:)\s*(-?\d+(?:[\.,]\d+)?)"
+    for name, operator, raw_value in re.findall(pattern, normalized):
+        value = number_or_none(raw_value)
+        if value is None:
+            continue
+        conditions.append({"name": name, "operator": "=" if operator == ":" else operator, "value": value})
+    return conditions
+
+
+def numeric_condition_matches(actual: object, operator: str, expected: float) -> bool:
+    value = number_or_none(actual)
+    if value is None:
+        return False
+    if operator == ">":
+        return value > expected
+    if operator == ">=":
+        return value >= expected
+    if operator == "<":
+        return value < expected
+    if operator == "<=":
+        return value <= expected
+    return value == expected
 
 
 class PimData:
@@ -1106,6 +1168,15 @@ class PimData:
             result[product_id] = identities
         return result
 
+    def data_query(self, question: str, model: dict | None = None, limit: int = 100) -> dict | None:
+        validation_result = self.validation_query(question, model, limit)
+        if validation_result:
+            return validation_result
+        color_result = self.color_parameter_query(question, limit)
+        if color_result:
+            return color_result
+        return None
+
     def validation_query(self, question: str, model: dict | None = None, limit: int = 100) -> dict | None:
         intent = validation_intent(question)
         if not intent["is_validation"]:
@@ -1113,7 +1184,10 @@ class PimData:
         normalized_model = normalize_validation_model(model)
         fields = [field for field in normalized_model["fields"] if field_matches_query(field, question)]
         if not fields:
-            return None
+            inferred_field = infer_validation_field_from_query(question)
+            if not inferred_field:
+                return None
+            fields = [inferred_field]
         field = fields[0]
         if field["record_type"] == "system":
             return self.validate_system_field(question, field, intent, limit)
@@ -1270,6 +1344,105 @@ class PimData:
             "findings": findings,
             "related_records": related_records,
         }
+
+    def color_parameter_query(self, question: str, limit: int = 100) -> dict | None:
+        normalized = normalize_query_text(question)
+        color_intent_tokens = (
+            "kolor", "kolory", "barwa", "barwy", "visual", "attribute", "attributes", "rgb",
+            "tekstura", "tekstury", "texture", "material", "map", "advanced",
+        )
+        if not any(token in normalized for token in color_intent_tokens):
+            return None
+        conditions = parse_numeric_conditions(question)
+        tokens = data_query_tokens(question)
+        condition_names = {condition["name"] for condition in conditions}
+        tokens = [token for token in tokens if token not in condition_names and number_or_none(token) is None]
+        findings = []
+        related_records = []
+        checked = 0
+        for color in self.colors:
+            color_id = int(color["Id"])
+            detail = self.color_detail(color_id)
+            checked += 1
+            if not self.color_matches_conditions(detail, conditions):
+                continue
+            if tokens and not self.color_matches_terms(detail, tokens):
+                continue
+            findings.append(
+                {
+                    "type": "color",
+                    "id": color_id,
+                    "name": detail["name"],
+                    "field": "Visual attribute",
+                    "issue": "matched",
+                    "message": self.color_match_summary(detail, conditions, tokens),
+                }
+            )
+            related_records.append({"type": "visual_attribute", "id": color_id, "name": detail["name"], "mode": "colors", "kind": "detail"})
+            if len(findings) >= limit:
+                break
+        if not findings and not conditions and not tokens:
+            return None
+        answer = f"Data query: checked {checked} visual attributes and selected {len(findings)} matching colors."
+        return {
+            "available": True,
+            "validation": True,
+            "query_type": "color_parameters",
+            "question": question,
+            "answer": answer,
+            "findings": findings,
+            "related_records": related_records,
+        }
+
+    def color_matches_conditions(self, detail: dict, conditions: list[dict]) -> bool:
+        if not conditions:
+            return True
+        params = {normalize_query_text(item.get("name")): item.get("value") for item in detail.get("parameters") or []}
+        rgb = detail.get("rgb") or {}
+        for condition in conditions:
+            name = normalize_query_text(condition["name"])
+            value = params.get(name)
+            if value is None and name in {"r", "red"}:
+                value = rgb.get("r")
+            if value is None and name in {"g", "green"}:
+                value = rgb.get("g")
+            if value is None and name in {"b", "blue"}:
+                value = rgb.get("b")
+            if not numeric_condition_matches(value, condition["operator"], condition["value"]):
+                return False
+        return True
+
+    def color_matches_terms(self, detail: dict, tokens: list[str]) -> bool:
+        haystack = normalize_query_text(
+            " ".join(
+                str(value)
+                for value in [
+                    visual_attribute_ai_text(detail),
+                    detail.get("name"),
+                    detail.get("type"),
+                    *(f"{item.get('name')} {item.get('value')}" for item in detail.get("parameters") or []),
+                ]
+            )
+        )
+        query = " ".join(tokens)
+        if matches_ai_query(haystack, query):
+            return True
+        return all(token in haystack for token in tokens)
+
+    def color_match_summary(self, detail: dict, conditions: list[dict], tokens: list[str]) -> str:
+        parts = []
+        rgb = detail.get("rgb") or {}
+        if rgb:
+            parts.append(f"RGB {rgb.get('r')}, {rgb.get('g')}, {rgb.get('b')}")
+        if detail.get("type"):
+            parts.append(f"type: {detail.get('type')}")
+        if conditions:
+            parts.append(
+                "conditions: " + ", ".join(f"{item['name']} {item['operator']} {item['value']}" for item in conditions)
+            )
+        if tokens:
+            parts.append("matched terms: " + ", ".join(tokens[:8]))
+        return " | ".join(parts) or "Matched visual attribute."
 
     def ai_catalog(self, mode: str = "", limit: int = 80, query: str = "") -> list[dict]:
         mode = mode.lower().strip()
@@ -2360,16 +2533,16 @@ def make_store_handler(store: DataStore):
                 if parsed.path == "/api/validation/query":
                     payload = read_json_body(self)
                     question = str(payload.get("question") or "")
-                    result = self.ready_data().validation_query(question, store.validation_model.load())
+                    result = self.ready_data().data_query(question, store.validation_model.load())
                     self.send_json(result or {"validation": False, "answer": "No validation rule matched this question.", "findings": [], "related_records": []})
                     return
                 if parsed.path == "/api/ai/search":
                     payload = read_json_body(self)
                     question = str(payload.get("question") or "")
                     mode = str(payload.get("mode") or "")
-                    validation_result = self.ready_data().validation_query(question, store.validation_model.load())
-                    if validation_result:
-                        self.send_json(validation_result)
+                    data_result = self.ready_data().data_query(question, store.validation_model.load())
+                    if data_result:
+                        self.send_json(data_result)
                         return
                     self.send_json(store.ai.search(question, self.ready_data().ai_catalog(mode=mode, query=question)))
                     return

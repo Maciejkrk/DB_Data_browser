@@ -1495,7 +1495,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         state.aiResult = { question, result };
         renderAiResult();
         $("aiStatus").textContent = result.validation
-          ? `Validation complete. Findings: ${(result.findings || []).length}.`
+          ? `Data query complete. Results: ${(result.findings || []).length}.`
           : result.timed_out ? "AI did not answer in time." : "AI response ready.";
       } catch (error) {
         $("aiStatus").textContent = error.message || "Search unavailable";
@@ -1512,7 +1512,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         ${navigationBackControl()}
         <div class="detail-head">
           <h2>AI search result</h2>
-          <div class="summary"><span class="pill">${result.validation ? "Validation result" : result.available === false ? "AI unavailable" : "AI available"}</span></div>
+          <div class="summary"><span class="pill">${result.validation ? "Data query result" : result.available === false ? "AI unavailable" : "AI available"}</span></div>
         </div>
         <div class="field">
           <div class="field-label">Question</div>
@@ -1532,7 +1532,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
     function validationFindings(findings) {
       if (!findings.length) return "";
       return `<details open>
-        <summary>Validation findings (${findings.length})</summary>
+        <summary>Data query results (${findings.length})</summary>
         <div class="data-table">
           <table>
             <thead><tr><th>Record</th><th>Field</th><th>Issue</th><th>Details</th></tr></thead>
