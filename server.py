@@ -2073,6 +2073,7 @@ class PimData:
                 "options": self.product_edit_options(),
                 "field_type": "Product",
                 "attribute_id": append_info["product_attribute_id"],
+                "fixed_product_variant": 1,
                 "append": True,
                 "array_attribute_id": append_info["array_attribute_id"],
                 "product_attribute_id": append_info["product_attribute_id"],
@@ -2101,14 +2102,20 @@ class PimData:
         ]
         if input_type == "product":
             options = self.product_edit_options()
+        current_value = first_value(attr, attr_def) if attr else None
+        fixed_product_variant = None
+        if input_type == "product" and attr:
+            current_value = attr.get("IntValue")
+            fixed_product_variant = attr.get("IntValue2") if attr.get("IntValue2") is not None else 1
         return {
             "record_name": record_name,
             "field_label": attr_label(attr_def, attr_id) if attr_id else field_key,
-            "current_value": first_value(attr, attr_def) if attr else None,
+            "current_value": current_value,
             "input_type": input_type,
             "options": options,
             "field_type": str((attr_def or {}).get("AttributeType") or ""),
             "attribute_id": attr_id,
+            **({"fixed_product_variant": fixed_product_variant} if fixed_product_variant is not None else {}),
         }
 
     def product_edit_options(self) -> list[dict]:

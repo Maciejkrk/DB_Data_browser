@@ -2723,8 +2723,8 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       host.innerHTML = `
         <div class="field-label">Edit data value</div>
         <div class="field-value patch-editor">
-          <div><strong>Original value:</strong> ${esc(original)}</div>
-          <div><strong>Corrected value:</strong> ${patch.active ? `<span class="patch-current">${esc(displayPatchValue(patch.new_value))}</span>` : `<span class="muted">No active correction saved</span>`}</div>
+          <div><strong>Original value:</strong> ${esc(displayPatchValue(original, info))}</div>
+          <div><strong>Corrected value:</strong> ${patch.active ? `<span class="patch-current">${esc(displayPatchValue(patch.new_value, info))}</span>` : `<span class="muted">No active correction saved</span>`}</div>
           ${patchInput(info, current)}
           <div class="preview-actions">
             <button type="button" data-save-patch>Save corrected value</button>
@@ -2761,8 +2761,13 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       }
     }
 
-    function displayPatchValue(value) {
-      return Array.isArray(value) ? value.join(", ") : value;
+    function displayPatchValue(value, info = {}) {
+      const raw = Array.isArray(value) ? value.join(", ") : value;
+      return (info.input_type || "") === "product" ? hideProductApprovalValue(raw) : raw;
+    }
+
+    function hideProductApprovalValue(value) {
+      return String(value ?? "").replace(/\s*\(\d+\)\s*$/, "");
     }
 
     function recordPreviewKey(recordType, recordId) {
@@ -2886,8 +2891,8 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
             <tbody>${patches.map((patch) => `
               <tr>
                 <td>${esc(patch.field_label || patch.field_key)}</td>
-                <td>${esc(displayPatchValue(patch.original_value ?? ""))}</td>
-                <td class="patch-current">${esc(displayPatchValue(patch.new_value ?? ""))}</td>
+                <td>${esc(displayPatchValue(patch.original_value ?? "", patch.field_info || {}))}</td>
+                <td class="patch-current">${esc(displayPatchValue(patch.new_value ?? "", patch.field_info || {}))}</td>
               </tr>
             `).join("")}</tbody>
           </table>
@@ -2951,14 +2956,14 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       if (inputType === "product") {
         const match = String(value ?? "").match(/(\d+)(?:\s*\((\d+)\))?/);
         const productId = match ? match[1] : "";
-        const variantId = match && match[2] ? match[2] : "";
+        const fixedVariant = info.fixed_product_variant ?? (match && match[2] ? match[2] : 1);
         return `<label>New product assignment
           <select data-patch-value data-patch-product-id>
             <option value="">Select product...</option>
             ${(info.options || []).map((option) => `<option value="${esc(option.id)}"${String(option.id) === productId ? " selected" : ""}>${esc(option.label)}</option>`).join("")}
           </select>
-          <input data-patch-product-variant type="number" value="${esc(variantId)}" placeholder="Variant ID">
-          <span class="muted">Choose the product and optionally set the product variant ID.</span>
+          <input data-patch-product-variant type="hidden" value="${esc(fixedVariant)}">
+          <span class="muted">Choose the product.</span>
         </label>`;
       }
       if (inputType !== "number") {
@@ -2979,6 +2984,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       }
       if ((info.input_type || "") === "product") {
         const productId = input.value;
+        if (!productId) return "";
         const variant = input.closest("[data-patch-editor]").querySelector("[data-patch-product-variant]")?.value || "";
         return variant ? `${productId} (${variant})` : productId;
       }
@@ -3078,8 +3084,9 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       button.textContent = "Edited";
       const valueNode = editableValueNode(button);
       if (valueNode) {
+        const patch = state.patchesByKey[patchKey(button.dataset.recordType, button.dataset.recordId, button.dataset.fieldKey)];
         valueNode.classList.add("edited-value");
-        valueNode.textContent = displayPatchValue(value) ?? "";
+        valueNode.textContent = displayPatchValue(value, patch?.field_info || {}) ?? "";
       }
       const fieldNode = button.closest(".field");
       if (fieldNode) fieldNode.classList.add("edited-field");
