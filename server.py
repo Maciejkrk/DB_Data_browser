@@ -1299,6 +1299,25 @@ class PimData:
     def model_tree(self, record: dict, attr_defs: dict[int, dict], root_model_id: int | None) -> list[dict]:
         attrs = latest_attrs(record)
 
+        def enrich_field(item: dict) -> dict:
+            attr_id = int(item.get("attribute_id") or 0)
+            attr_def = attr_defs.get(attr_id) or {}
+            if normalize_query_text(attr_def.get("AttributeType")) != "product":
+                return item
+            raw = item.get("raw") or {}
+            product_id = raw.get("IntValue")
+            variant_id = raw.get("IntValue2")
+            linked_product = self.product_index.get(int(product_id)) if isinstance(product_id, int) else None
+            label = product_name(linked_product, self.product_attr_defs, self.product_name_attribute_ids) if linked_product else str(product_id or item.get("value") or "")
+            display = f"{label} / variant {variant_id}" if variant_id else label
+            return {**item, "product_id": product_id, "product_variant": variant_id, "display_value": display}
+
+        def row_label(row: dict, fallback: str) -> str:
+            product_field = next((item for item in row.get("values") or [] if item.get("product_id")), None)
+            if product_field:
+                return str(product_field.get("display_value") or fallback)
+            return row_display_name(row, fallback)
+
         def build_array(array_attr_id: int, array_attr_def: dict, parent_hash: str = "") -> dict:
             rows = [
                 row for row in rows_for_parent(attrs, array_attr_id, attr_defs)
@@ -1309,7 +1328,7 @@ class PimData:
             row_nodes = []
             for row in rows:
                 fields = [
-                    item for item in row.get("values") or []
+                    enrich_field(item) for item in row.get("values") or []
                     if str((attr_defs.get(int(item.get("attribute_id") or 0)) or {}).get("AttributeType") or "").lower() != "model_array"
                 ]
                 row_hash = str(row.get("hash") or "")
@@ -1317,7 +1336,7 @@ class PimData:
                     {
                         "row": row.get("row"),
                         "hash": row_hash,
-                        "label": row_display_name(row, f"{attr_label(array_attr_def, array_attr_id)} {row.get('row')}"),
+                        "label": row_label({"values": fields, "row": row.get("row")}, f"{attr_label(array_attr_def, array_attr_id)} {row.get('row')}"),
                         "fields": fields,
                         "children": [build_array(child_attr_id, child_attr_def, row_hash) for child_attr_id, child_attr_def in child_arrays],
                     }
@@ -2038,15 +2057,25 @@ class PimData:
         attr = self.find_edit_attribute(record, attr_defs, field_key)
         attr_id = int(attr.get("AttributeId") or 0) if attr else 0
         attr_def = attr_defs.get(attr_id)
+        input_type = self.edit_input_type(attr_def)
+        options = [
+            {"id": option.get("Id"), "label": str(option.get("OptionName") or option.get("OptionValue") or option.get("Id"))}
+            for option in (attr_def or {}).get("AttributeOptions") or []
+        ]
+        if input_type == "product":
+            options = [
+                {
+                    "id": product_id,
+                    "label": f"{product_id} - {product_name(self.product_index[product_id], self.product_attr_defs, self.product_name_attribute_ids)}",
+                }
+                for product_id in sorted(self.product_index)
+            ]
         return {
             "record_name": record_name,
             "field_label": attr_label(attr_def, attr_id) if attr_id else field_key,
             "current_value": first_value(attr, attr_def) if attr else None,
-            "input_type": self.edit_input_type(attr_def),
-            "options": [
-                {"id": option.get("Id"), "label": str(option.get("OptionName") or option.get("OptionValue") or option.get("Id"))}
-                for option in (attr_def or {}).get("AttributeOptions") or []
-            ],
+            "input_type": input_type,
+            "options": options,
             "field_type": str((attr_def or {}).get("AttributeType") or ""),
             "attribute_id": attr_id,
         }

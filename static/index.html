@@ -696,7 +696,8 @@
       background: #fff;
       overflow: hidden;
     }
-    .model-tree-node > header {
+    .model-tree-node > summary,
+    .model-tree-row > summary {
       display: flex;
       align-items: center;
       justify-content: space-between;
@@ -705,6 +706,7 @@
       background: var(--ink-soft);
       border-bottom: 1px solid var(--line);
       font-weight: 800;
+      cursor: pointer;
     }
     .model-tree-rows {
       display: grid;
@@ -713,19 +715,20 @@
     }
     .model-tree-row {
       display: grid;
-      gap: 8px;
-      padding-left: 10px;
-      border-left: 3px solid #d0d5dd;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      overflow: hidden;
     }
     .model-tree-fields {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
       gap: 8px;
+      padding: 10px;
     }
     .model-tree-children {
       display: grid;
       gap: 8px;
-      margin-left: 12px;
+      padding: 0 10px 10px 18px;
     }
     .product-choice {
       display: grid;
@@ -2946,9 +2949,16 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         return `<label><input type="checkbox" data-patch-value${value === true || String(value).toLowerCase() === "true" ? " checked" : ""}> New value</label>`;
       }
       if (inputType === "product") {
+        const match = String(value ?? "").match(/(\d+)(?:\s*\((\d+)\))?/);
+        const productId = match ? match[1] : "";
+        const variantId = match && match[2] ? match[2] : "";
         return `<label>New product assignment
-          <input data-patch-value type="text" value="${esc(value ?? "")}" placeholder="Product ID or Product ID (variant ID)">
-          <span class="muted">Example: 6089 or 6089 (8). This changes the product assignment in this layer option.</span>
+          <select data-patch-value data-patch-product-id>
+            <option value="">Select product...</option>
+            ${(info.options || []).map((option) => `<option value="${esc(option.id)}"${String(option.id) === productId ? " selected" : ""}>${esc(option.label)}</option>`).join("")}
+          </select>
+          <input data-patch-product-variant type="number" value="${esc(variantId)}" placeholder="Variant ID">
+          <span class="muted">Choose the product and optionally set the product variant ID.</span>
         </label>`;
       }
       if (inputType !== "number") {
@@ -2966,6 +2976,11 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       if ((info.input_type || "") === "multi") {
         const selected = [...input.closest("[data-patch-editor]").querySelectorAll("[data-patch-multi]:checked")].map((item) => item.value);
         return selected.length ? selected : input.value;
+      }
+      if ((info.input_type || "") === "product") {
+        const productId = input.value;
+        const variant = input.closest("[data-patch-editor]").querySelector("[data-patch-product-variant]")?.value || "";
+        return variant ? `${productId} (${variant})` : productId;
       }
       if ((info.input_type || "") === "boolean") return input.checked;
       return input.value;
@@ -3660,23 +3675,26 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
 
     function modelTreeNode(node, recordType = "", data = null, level = 1) {
       const rows = node.rows || [];
-      return `<section class="model-tree-node" data-model-level="${esc(level)}">
-        <header>
+      return `<details class="model-tree-node" data-model-level="${esc(level)}"${level <= 2 ? " open" : ""}>
+        <summary>
           <span>${esc(node.label || "Model array")}</span>
           <span class="muted">Level ${esc(level)} / ${esc(rows.length)} item${rows.length === 1 ? "" : "s"}</span>
-        </header>
+        </summary>
         <div class="model-tree-rows">
           ${rows.map((row) => modelTreeRow(row, recordType, data, level)).join("") || `<div class="muted">No items.</div>`}
         </div>
-      </section>`;
+      </details>`;
     }
 
     function modelTreeRow(row, recordType = "", data = null, level = 1) {
-      return `<div class="model-tree-row">
-        <strong>${esc(row.label || `Row ${row.row}`)}</strong>
+      return `<details class="model-tree-row"${level <= 2 ? " open" : ""}>
+        <summary>
+          <strong>${esc(row.label || `Row ${row.row}`)}</strong>
+          <span class="muted">Row ${esc(row.row ?? "")}</span>
+        </summary>
         ${modelTreeFields(row.fields || [], recordType, data)}
         ${(row.children || []).length ? `<div class="model-tree-children">${row.children.map((child) => modelTreeNode(child, recordType, data, level + 1)).join("")}</div>` : ""}
-      </div>`;
+      </details>`;
     }
 
     function modelTreeFields(fields, recordType = "", data = null) {
@@ -3693,7 +3711,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       const productVariant = raw.IntValue2;
       const displayValue = productId ? `${productId}${productVariant ? ` (${productVariant})` : ""}` : value;
       const valueHtml = String((field.attribute_name || "")).toLowerCase() === "product" || productId
-        ? `${productId ? `<button class="product-chip" type="button" data-linked-product-id="${esc(productId)}">${esc(displayValue)}</button>` : esc(displayValue)}`
+        ? `${productId ? `<button class="product-chip" type="button" data-linked-product-id="${esc(productId)}">${esc(field.display_value || displayValue)}</button>` : esc(field.display_value || displayValue)}`
         : esc(value);
       return `<div class="field">
         <div class="field-label"><span>${esc(label)}</span></div>
