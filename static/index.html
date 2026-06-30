@@ -2591,7 +2591,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       await renderRecordIntoDetail(recordType, data);
     }
 
-    async function renderRecordIntoDetail(recordType, data, options = {}) {
+    async function renderRecordIntoDetail(recordType, data) {
       $("detail").innerHTML = renderRecordForType(recordType, data);
       attachColorTileEvents();
       attachSystemProductLinks();
@@ -2599,20 +2599,6 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       attachNavigationControls();
       attachFieldNoteButtons();
       applyActiveRecordCorrections(recordType, data.id);
-      restoreOpenDetails(options.openKeys || []);
-    }
-
-    function collectOpenDetails() {
-      return new Set([...document.querySelectorAll("#detail details[open][data-open-key]")]
-        .map((item) => item.dataset.openKey)
-        .filter(Boolean));
-    }
-
-    function restoreOpenDetails(openKeys) {
-      if (!openKeys || !openKeys.size) return;
-      for (const detail of document.querySelectorAll("#detail details[data-open-key]")) {
-        if (openKeys.has(detail.dataset.openKey)) detail.open = true;
-      }
     }
 
     async function fetchRecordData(recordType, recordId) {
@@ -2795,7 +2781,6 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         markPatchedField(context.recordType, context.data.id, context.fieldKey, saved.new_value);
         refreshVisibleRecordPatchSummaries(context.recordType, context.data);
         refreshVisibleAppendProductPatches(context.recordType, context.data);
-        await refreshOpenDetailRecord(context.recordType, context.data.id);
         renderPatchEditor(panel, saved, context);
       });
       const revertButton = host.querySelector("[data-revert-patch]");
@@ -2806,17 +2791,9 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
           unmarkPatchedField(context.recordType, context.data.id, context.fieldKey, original);
           refreshVisibleRecordPatchSummaries(context.recordType, context.data);
           refreshVisibleAppendProductPatches(context.recordType, context.data);
-          await refreshOpenDetailRecord(context.recordType, context.data.id);
           renderPatchEditor(panel, { ...patch, ...reverted, active: false, new_value: original }, context);
         });
       }
-    }
-
-    async function refreshOpenDetailRecord(recordType, recordId) {
-      if (state.detailView !== "detail" || String(state.selectedId) !== String(recordId)) return;
-      const openKeys = collectOpenDetails();
-      const refreshed = await fetchRecordData(recordType, recordId);
-      await renderRecordIntoDetail(recordType, refreshed, { openKeys });
     }
 
     function displayPatchValue(value, info = {}, fallbackDisplay = "") {
@@ -3778,7 +3755,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
 
     function modelTree(nodes, recordType = "", data = null) {
       if (!nodes || !nodes.length) return "";
-      return `<details data-open-key="model-tree">
+      return `<details>
         <summary>Model tree</summary>
         <div class="model-tree">${nodes.map((node) => modelTreeNode(node, recordType, data, 1)).join("")}</div>
       </details>`;
@@ -3807,8 +3784,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
             data-field-base-key="${esc(addProductBaseKey)}"
             data-field-label="${esc(`Add product to ${node.label || "model array"}`)}">Add product</button>`
         : "";
-      const nodeOpenKey = `model-tree:node:${level}:${node.attribute_id || ""}:${node.parent_hash || ""}`;
-      return `<details class="model-tree-node" data-model-level="${esc(level)}" data-open-key="${esc(nodeOpenKey)}">
+      return `<details class="model-tree-node" data-model-level="${esc(level)}">
         <summary>
           <span>${esc(node.label || "Model array")}</span>
           <span class="muted">Level ${esc(level)} / ${esc(rows.length)} item${rows.length === 1 ? "" : "s"}</span>
@@ -3844,8 +3820,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
     }
 
     function modelTreeRow(row, recordType = "", data = null, level = 1) {
-      const rowOpenKey = `model-tree:row:${level}:${row.hash || ""}:${row.row ?? ""}`;
-      return `<details class="model-tree-row" data-open-key="${esc(rowOpenKey)}">
+      return `<details class="model-tree-row">
         <summary>
           <strong>${esc(row.label || `Row ${row.row}`)}</strong>
           <span class="muted">Row ${esc(row.row ?? "")}</span>
