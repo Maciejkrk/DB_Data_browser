@@ -2488,6 +2488,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       if (!options.skipAppHistory) rememberAppLocation();
       state.detailView = "color_group";
       state.selectedId = id;
+      if (!isLoadedDataPreview("color_group", id)) state.loadedDataPreviewKey = "";
       renderList();
       const data = await api(`/api/color-groups/${id}`);
       await renderRecordIntoDetail("color_group", data);
@@ -2498,12 +2499,13 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       state.detailView = "detail";
       const requestId = ++state.requestId;
       state.selectedId = id;
+      const recordType = state.mode === "products" ? "product" : state.mode === "systems" ? "system" : "color";
+      if (!isLoadedDataPreview(recordType, id)) state.loadedDataPreviewKey = "";
       if (state.mode === "colors") renderList();
       else renderFilters();
       const path = state.mode === "products" ? `/api/products/${id}` : state.mode === "colors" ? `/api/colors/${id}` : `/api/systems/${id}`;
       const data = await api(path);
       if (requestId !== state.requestId) return;
-      const recordType = state.mode === "products" ? "product" : state.mode === "systems" ? "system" : "color";
       await renderRecordIntoDetail(recordType, data);
     }
 
@@ -2514,6 +2516,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       await attachCorrectionPanel(data, recordType);
       attachNavigationControls();
       attachFieldNoteButtons();
+      applyActiveRecordCorrections(recordType, data.id);
     }
 
     async function fetchRecordData(recordType, recordId) {
@@ -2737,11 +2740,13 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
 
     async function enableLoadedDataPreview(recordType, data) {
       state.loadedDataPreviewKey = recordPreviewKey(recordType, data.id);
+      await refreshPatchIndex();
       await renderRecordIntoDetail(recordType, await fetchRecordData(recordType, data.id));
     }
 
     async function disableLoadedDataPreview(recordType, data) {
       if (isLoadedDataPreview(recordType, data.id)) state.loadedDataPreviewKey = "";
+      await refreshPatchIndex();
       await renderRecordIntoDetail(recordType, await fetchRecordData(recordType, data.id));
     }
 
@@ -2881,6 +2886,13 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         if (isLoadedDataPreview(button.dataset.recordType, button.dataset.recordId)) continue;
         const patch = state.patchesByKey[patchKey(button.dataset.recordType, button.dataset.recordId, button.dataset.fieldKey)];
         if (patch) markButtonPatched(button, patch.new_value);
+      }
+    }
+
+    function applyActiveRecordCorrections(recordType, recordId) {
+      if (isLoadedDataPreview(recordType, recordId)) return;
+      for (const patch of activeRecordPatches(recordType, recordId)) {
+        markPatchedField(recordType, recordId, patch.field_key, patch.new_value);
       }
     }
 
