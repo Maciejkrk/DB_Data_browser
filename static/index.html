@@ -541,6 +541,30 @@
       color: #b42318;
       font-weight: 800;
     }
+    .record-patch-summary {
+      margin-top: 8px;
+      border: 1px solid #fecdca;
+      border-radius: 6px;
+      background: #fff1f0;
+      overflow: hidden;
+    }
+    .record-patch-summary header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 8px 10px;
+      border-bottom: 1px solid #fecdca;
+      background: #fff7f6;
+    }
+    .record-patch-summary table {
+      margin: 0;
+      background: #fff;
+    }
+    .record-patch-summary td,
+    .record-patch-summary th {
+      border-color: #fecdca;
+    }
     .table-cell-note {
       display: flex;
       align-items: flex-start;
@@ -2536,6 +2560,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         ${fieldLabel ? `<div class="field"><div class="field-label">Edited field</div><div class="field-value">${esc(fieldLabel)}</div></div>` : ""}
         ${fieldLabel ? `<div data-patch-editor class="field"><div class="field-label">Edit data value</div><div class="field-value muted">Loading editable value...</div></div>` : ""}
         ${fieldLabel ? "" : `<div class="muted">Edit values directly with the Edit value buttons next to fields and table cells.</div>`}
+        ${fieldLabel ? "" : `<div data-record-patch-summary></div>`}
         ${fieldLabel ? "" : `<label><input type="checkbox" data-record-accepted> Accepted</label>`}
         <label><input type="checkbox" data-correction-required> Requires correction</label>
         <label><input type="checkbox" data-correction-resolved> Corrected / resolved</label>
@@ -2562,6 +2587,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       panel.querySelector("[data-correction-comment]").value = note.comment || "";
       renderAttachments(panel, note.attachments || []);
       if (patch) renderPatchEditor(panel, patch, { recordType, data, fieldKey, fieldLabel, fieldCurrent });
+      if (!fieldKey) renderRecordPatchSummary(panel, recordType, data);
       panel.querySelector("[data-save-correction]").addEventListener("click", async () => {
         const attachment = await selectedAttachmentPayload(panel.querySelector("[data-correction-attachment]"));
         const payload = {
@@ -2617,6 +2643,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         });
         state.patchesByKey[saved.key] = saved;
         markPatchedField(context.recordType, context.data.id, context.fieldKey, saved.new_value);
+        refreshVisibleRecordPatchSummaries(context.recordType, context.data);
         renderPatchEditor(panel, saved, context);
       });
       const revertButton = host.querySelector("[data-revert-patch]");
@@ -2625,6 +2652,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
           const reverted = await apiPost("/api/patches/revert", { key: patch.key });
           delete state.patchesByKey[patch.key];
           unmarkPatchedField(context.recordType, context.data.id, context.fieldKey, original);
+          refreshVisibleRecordPatchSummaries(context.recordType, context.data);
           renderPatchEditor(panel, { ...patch, ...reverted, active: false, new_value: original }, context);
         });
       }
@@ -2632,6 +2660,58 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
 
     function displayPatchValue(value) {
       return Array.isArray(value) ? value.join(", ") : value;
+    }
+
+    function activeRecordPatches(recordType, recordId) {
+      return Object.values(state.patchesByKey)
+        .filter((patch) => patch.active && patch.record_type === String(recordType) && String(patch.record_id) === String(recordId))
+        .sort((a, b) => String(a.field_label || a.field_key).localeCompare(String(b.field_label || b.field_key)));
+    }
+
+    function renderRecordPatchSummary(panel, recordType, data) {
+      const host = panel.querySelector("[data-record-patch-summary]");
+      if (!host) return;
+      const patches = activeRecordPatches(recordType, data.id);
+      if (!patches.length) {
+        host.innerHTML = `<div class="field"><div class="field-label">Object correction state</div><div class="field-value muted">No active data corrections for this object.</div></div>`;
+        return;
+      }
+      host.innerHTML = `
+        <div class="record-patch-summary">
+          <header>
+            <strong>Object correction state (${patches.length})</strong>
+            <button type="button" data-revert-record-patches>Restore object original values</button>
+          </header>
+          <table>
+            <thead><tr><th>Field</th><th>Before correction</th><th>After correction</th></tr></thead>
+            <tbody>${patches.map((patch) => `
+              <tr>
+                <td>${esc(patch.field_label || patch.field_key)}</td>
+                <td>${esc(displayPatchValue(patch.original_value ?? ""))}</td>
+                <td class="patch-current">${esc(displayPatchValue(patch.new_value ?? ""))}</td>
+              </tr>
+            `).join("")}</tbody>
+          </table>
+        </div>
+      `;
+      host.querySelector("[data-revert-record-patches]").addEventListener("click", async () => {
+        const ok = window.confirm(`Restore all active corrections for ${data.name || data.id}?`);
+        if (!ok) return;
+        for (const patch of patches) {
+          const reverted = await apiPost("/api/patches/revert", { key: patch.key });
+          delete state.patchesByKey[patch.key];
+          unmarkPatchedField(recordType, data.id, patch.field_key, reverted.original_value ?? patch.original_value);
+        }
+        renderRecordPatchSummary(panel, recordType, data);
+      });
+    }
+
+    function refreshVisibleRecordPatchSummaries(recordType, data) {
+      for (const panel of document.querySelectorAll("[data-correction-panel]")) {
+        if (panel.dataset.recordType === String(recordType) && panel.dataset.recordId === String(data.id) && !panel.dataset.fieldKey) {
+          renderRecordPatchSummary(panel, recordType, data);
+        }
+      }
     }
 
     function patchInput(info, value) {
