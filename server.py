@@ -12,6 +12,7 @@ import os
 import re
 import socket
 import time
+import unicodedata
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
@@ -23,6 +24,7 @@ DEFAULT_DATA_DIR = APP_DIR / "data"
 NOTES_FILE = "browser_corrections.json"
 PROJECT_FILE = "browser_review_project.json"
 ATTACHMENTS_DIR = "correction_attachments"
+VALIDATION_MODEL_FILE = "browser_validation_model.json"
 MAX_JSON_BODY_BYTES = 10 * 1024 * 1024
 MAX_UPLOAD_BYTES = 250 * 1024 * 1024
 MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
@@ -867,6 +869,145 @@ def text_has_token(text: str, token: str) -> bool:
     return re.search(rf"(^|[^\w.-]){re.escape(token)}($|[^\w.-])", text) is not None
 
 
+def normalize_query_text(value: object) -> str:
+    text = unicodedata.normalize("NFKD", str(value or "").lower())
+    text = "".join(char for char in text if not unicodedata.combining(char))
+    return re.sub(r"\s+", " ", text.replace("_", " ")).strip()
+
+
+def value_is_present(value: object) -> bool:
+    if value is None or value is False:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    return True
+
+
+def validation_field_key(item: dict) -> str:
+    return normalize_query_text(item.get("key") or item.get("name") or item.get("label")).replace(" ", "_")
+
+
+def builtin_validation_fields() -> list[dict]:
+    return [
+        {
+            "key": "lambda",
+            "label": "Lambda",
+            "record_type": "product",
+            "locations": ["sot", "features", "general"],
+            "aliases": [
+                "lambda",
+                "lamda",
+                "wspolczynnik przewodzenia",
+                "conductivity",
+                "thermal conductivity",
+                "278",
+            ],
+        },
+        {
+            "key": "thickness",
+            "label": "Thickness",
+            "record_type": "product",
+            "locations": ["sot", "features", "general"],
+            "aliases": ["thickness", "grubosc", "grubosci", "277"],
+        },
+        {
+            "key": "density",
+            "label": "Density",
+            "record_type": "product",
+            "locations": ["sot", "features", "general"],
+            "aliases": ["density", "gestosc", "279"],
+        },
+        {
+            "key": "documents",
+            "label": "Documents",
+            "record_type": "product",
+            "locations": ["documents"],
+            "aliases": ["document", "documents", "dokument", "dokumenty", "plik", "pliki"],
+        },
+        {
+            "key": "layers",
+            "label": "Layers",
+            "record_type": "system",
+            "locations": ["layers"],
+            "aliases": ["layer", "layers", "warstwa", "warstwy"],
+        },
+        {
+            "key": "products",
+            "label": "Products",
+            "record_type": "system",
+            "locations": ["products"],
+            "aliases": ["product", "products", "produkt", "produkty"],
+        },
+    ]
+
+
+def normalize_validation_field(item: dict) -> dict:
+    key = validation_field_key(item)
+    label = str(item.get("label") or item.get("name") or key).strip() or key
+    aliases = item.get("aliases") if isinstance(item.get("aliases"), list) else []
+    aliases = [str(alias) for alias in aliases if str(alias).strip()]
+    locations = item.get("locations") if isinstance(item.get("locations"), list) else []
+    locations = [normalize_query_text(location) for location in locations if str(location).strip()]
+    record_type = normalize_query_text(item.get("record_type") or item.get("type") or "product")
+    if record_type in {"products", "produkt"}:
+        record_type = "product"
+    if record_type in {"systems", "building_element", "building elements", "systemy"}:
+        record_type = "system"
+    return {
+        "key": key,
+        "label": label,
+        "record_type": record_type or "product",
+        "aliases": list(dict.fromkeys([label, key, *aliases])),
+        "locations": locations or ["general", "features", "sot"],
+    }
+
+
+def normalize_validation_model(payload: dict | None) -> dict:
+    payload = payload if isinstance(payload, dict) else {}
+    fields = [normalize_validation_field(item) for item in builtin_validation_fields()]
+    custom_fields = payload.get("fields") if isinstance(payload.get("fields"), list) else []
+    for item in custom_fields:
+        if isinstance(item, dict):
+            fields.append(normalize_validation_field(item))
+    merged: dict[str, dict] = {}
+    for field in fields:
+        existing = merged.get(field["key"])
+        if not existing:
+            merged[field["key"]] = field
+            continue
+        existing["aliases"] = list(dict.fromkeys([*existing.get("aliases", []), *field.get("aliases", [])]))
+        existing["locations"] = list(dict.fromkeys([*existing.get("locations", []), *field.get("locations", [])]))
+        existing["label"] = field.get("label") or existing.get("label")
+    return {
+        "fields": list(merged.values()),
+        "source": payload.get("source") or "",
+        "updated_at": int(payload.get("updated_at") or 0),
+    }
+
+
+def field_matches_query(field: dict, query: str) -> bool:
+    normalized = normalize_query_text(query)
+    aliases = [normalize_query_text(alias) for alias in field.get("aliases") or []]
+    return any(alias and (alias in normalized or text_has_token(normalized, alias)) for alias in aliases)
+
+
+def validation_intent(query: str) -> dict:
+    normalized = normalize_query_text(query)
+    row_tokens = ("wariant", "wariantow", "variant", "variants", "typoszereg", "sot", "wiersz", "row", "rows")
+    missing_tokens = ("bez", "brak", "brakuje", "missing", "empty", "puste", "pusty", "not set", "nie ma")
+    all_rows_tokens = ("dla wszystkich", "wszystkich wariant", "all variants", "every variant", "kazdy wariant")
+    relation = "missing"
+    if any(token in normalized for token in all_rows_tokens) or "nie jest dla wszystkich" in normalized:
+        relation = "missing_in_some_rows"
+    elif any(token in normalized for token in row_tokens):
+        relation = "missing_in_rows"
+    return {
+        "relation": relation,
+        "row_scope": relation in {"missing_in_rows", "missing_in_some_rows"} or any(token in normalized for token in row_tokens),
+        "is_validation": any(token in normalized for token in missing_tokens) or relation != "missing",
+    }
+
+
 class PimData:
     def __init__(self, data_dir: Path) -> None:
         self.data_dir = data_dir
@@ -964,6 +1105,171 @@ class PimData:
                         identities.add(str(value))
             result[product_id] = identities
         return result
+
+    def validation_query(self, question: str, model: dict | None = None, limit: int = 100) -> dict | None:
+        intent = validation_intent(question)
+        if not intent["is_validation"]:
+            return None
+        normalized_model = normalize_validation_model(model)
+        fields = [field for field in normalized_model["fields"] if field_matches_query(field, question)]
+        if not fields:
+            return None
+        field = fields[0]
+        if field["record_type"] == "system":
+            return self.validate_system_field(question, field, intent, limit)
+        return self.validate_product_field(question, field, intent, limit)
+
+    def validate_product_field(self, question: str, field: dict, intent: dict, limit: int) -> dict:
+        findings = []
+        related_records = []
+        checked = 0
+        for product in self.products:
+            product_id = int(product["Id"])
+            detail = self.product_detail(product_id)
+            if intent["row_scope"]:
+                row_result = self.validate_product_rows(detail, field)
+                if not row_result["checked_rows"]:
+                    continue
+                checked += 1
+                if row_result["missing_rows"]:
+                    findings.append(
+                        {
+                            "type": "product",
+                            "id": product_id,
+                            "name": detail["name"],
+                            "field": field["label"],
+                            "issue": "missing_in_rows",
+                            "checked_rows": row_result["checked_rows"],
+                            "missing_rows": row_result["missing_rows"],
+                            "present_rows": row_result["present_rows"],
+                            "message": f"{field['label']} is missing in rows: {', '.join(str(row) for row in row_result['missing_rows'][:12])}",
+                        }
+                    )
+            else:
+                checked += 1
+                if not self.product_has_field(detail, field):
+                    findings.append(
+                        {
+                            "type": "product",
+                            "id": product_id,
+                            "name": detail["name"],
+                            "field": field["label"],
+                            "issue": "missing",
+                            "message": f"{field['label']} is missing.",
+                        }
+                    )
+            if findings and findings[-1]["id"] == product_id:
+                related_records.append({"type": "product", "id": product_id, "name": detail["name"], "mode": "products", "kind": "detail"})
+            if len(findings) >= limit:
+                break
+        answer = (
+            f"Validation rule: {field['label']}. Checked {checked} products and found {len(findings)} records with missing data."
+            if findings
+            else f"Validation rule: {field['label']}. Checked {checked} products and found no missing data."
+        )
+        return {
+            "available": True,
+            "validation": True,
+            "rule": {"field": field, "intent": intent},
+            "question": question,
+            "answer": answer,
+            "findings": findings,
+            "related_records": related_records,
+        }
+
+    def validate_product_rows(self, detail: dict, field: dict) -> dict:
+        rows = []
+        locations = set(field.get("locations") or [])
+        if locations.intersection({"sot", "typoszereg", "variants", "warianty"}):
+            rows.extend(detail.get("sot") or [])
+            if not rows:
+                rows.extend(detail.get("variants") or [])
+        if not rows and "features" in locations:
+            rows.extend(detail.get("custom_attributes") or [])
+        checked_rows = []
+        missing_rows = []
+        present_rows = []
+        for index, row in enumerate(rows):
+            row_number = row.get("row")
+            label = int(row_number) + 1 if isinstance(row_number, int) else index + 1
+            checked_rows.append(label)
+            if self.row_has_field(row, field):
+                present_rows.append(label)
+            else:
+                missing_rows.append(label)
+        return {"checked_rows": checked_rows, "missing_rows": missing_rows, "present_rows": present_rows}
+
+    def row_has_field(self, row: dict, field: dict) -> bool:
+        aliases = [normalize_query_text(alias) for alias in field.get("aliases") or []]
+        for item in row.get("values") or []:
+            labels = [
+                item.get("label"),
+                item.get("attribute_name"),
+                item.get("attribute_id"),
+            ]
+            haystack = " ".join(normalize_query_text(label) for label in labels)
+            if any(alias and (alias in haystack or text_has_token(haystack, alias)) for alias in aliases):
+                return value_is_present(item.get("value"))
+        return False
+
+    def product_has_field(self, detail: dict, field: dict) -> bool:
+        aliases = [normalize_query_text(alias) for alias in field.get("aliases") or []]
+        for item in detail.get("general") or []:
+            haystack = normalize_query_text(f"{item.get('label')} {item.get('attribute_name')} {item.get('attribute_id')}")
+            if any(alias and (alias in haystack or text_has_token(haystack, alias)) for alias in aliases):
+                return value_is_present(item.get("value"))
+        for feature in detail.get("features") or []:
+            haystack = normalize_query_text(feature.get("name"))
+            if any(alias and (alias in haystack or text_has_token(haystack, alias)) for alias in aliases):
+                return value_is_present(feature.get("value"))
+        if "documents" in set(field.get("locations") or []):
+            return bool((detail.get("documents") or []) or (detail.get("media") or []))
+        return bool(self.validate_product_rows(detail, field)["present_rows"])
+
+    def validate_system_field(self, question: str, field: dict, intent: dict, limit: int) -> dict:
+        findings = []
+        related_records = []
+        checked = 0
+        locations = set(field.get("locations") or [])
+        for element in self.elements:
+            element_id = int(element["Id"])
+            detail = self.system_detail(element_id)
+            checked += 1
+            missing = False
+            if locations.intersection({"layers", "warstwy"}):
+                missing = not any(variant.get("layers") for variant in detail.get("system_variants") or [])
+            elif locations.intersection({"products", "produkty"}):
+                layers = [layer for variant in detail.get("system_variants") or [] for layer in variant.get("layers") or []]
+                missing = any(not layer.get("products") for layer in layers) if layers else True
+            else:
+                missing = not any(
+                    field_matches_query(field, f"{item.get('label')} {item.get('value')}")
+                    for item in detail.get("general") or []
+                )
+            if missing:
+                findings.append(
+                    {
+                        "type": "system",
+                        "id": element_id,
+                        "name": detail["name"],
+                        "field": field["label"],
+                        "issue": "missing",
+                        "message": f"{field['label']} is missing or incomplete.",
+                    }
+                )
+                related_records.append({"type": "system", "id": element_id, "name": detail["name"], "mode": "systems", "kind": "detail"})
+            if len(findings) >= limit:
+                break
+        answer = f"Validation rule: {field['label']}. Checked {checked} building elements and found {len(findings)} records with missing data."
+        return {
+            "available": True,
+            "validation": True,
+            "rule": {"field": field, "intent": intent},
+            "question": question,
+            "answer": answer,
+            "findings": findings,
+            "related_records": related_records,
+        }
 
     def ai_catalog(self, mode: str = "", limit: int = 80, query: str = "") -> list[dict]:
         mode = mode.lower().strip()
@@ -1669,6 +1975,71 @@ class ReviewProjectStore:
         return result
 
 
+class ValidationModelStore:
+    def __init__(self, data_dir: Path) -> None:
+        self.path = data_dir / VALIDATION_MODEL_FILE
+
+    def load(self) -> dict:
+        payload = load_json_if_exists(self.path, {})
+        model = normalize_validation_model(payload)
+        model["configured"] = self.path.exists()
+        model["model_file"] = str(self.path)
+        return model
+
+    def save(self, payload: dict) -> dict:
+        if not isinstance(payload, dict):
+            raise ValueError("Expected validation model JSON object")
+        if payload.get("url"):
+            payload = self.model_from_url(str(payload.get("url") or ""))
+        elif payload.get("text") and not payload.get("fields"):
+            payload = self.model_from_text(str(payload.get("text") or ""), source=str(payload.get("source") or "manual text"))
+        payload = normalize_validation_model({**payload, "updated_at": int(time.time())})
+        write_json(self.path, payload)
+        payload["configured"] = True
+        payload["model_file"] = str(self.path)
+        return payload
+
+    def model_from_url(self, url: str) -> dict:
+        body, content_type = fetch_remote_asset(url)
+        text = body.decode("utf-8", errors="replace")
+        if "html" in content_type:
+            text = strip_html(text)
+        model = self.model_from_text(text, source=url)
+        model["url"] = url
+        return model
+
+    def model_from_text(self, text: str, source: str = "") -> dict:
+        fields = []
+        seen = set()
+        for line in text.splitlines():
+            raw = re.sub(r"\s+", " ", strip_html(line)).strip()
+            if not raw or len(raw) > 180:
+                continue
+            if raw.startswith(("-", "*")):
+                raw = raw[1:].strip()
+            if ":" in raw:
+                name, aliases_text = raw.split(":", 1)
+                aliases = re.split(r"[,;/|]", aliases_text)
+            else:
+                name, aliases = raw, []
+            key = normalize_query_text(name).replace(" ", "_")
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            fields.append(
+                {
+                    "key": key,
+                    "label": name.strip(),
+                    "record_type": "product",
+                    "locations": ["general", "features", "sot"],
+                    "aliases": [name.strip(), *[alias.strip() for alias in aliases if alias.strip()]],
+                }
+            )
+            if len(fields) >= 80:
+                break
+        return {"fields": fields, "source": source}
+
+
 def project_progress(notes: list[dict], data: PimData | None) -> dict:
     totals = {
         "product": len(data.products) if data else 0,
@@ -1802,6 +2173,7 @@ class DataStore:
         self.data: PimData | None = None
         self.notes = NotesStore(data_dir)
         self.project = ReviewProjectStore(data_dir, self.notes)
+        self.validation_model = ValidationModelStore(data_dir)
         self.ai = AiAgent()
         self.reload()
 
@@ -1982,10 +2354,23 @@ def make_store_handler(store: DataStore):
                 if parsed.path == "/api/records/accept":
                     self.send_json(store.notes.bulk_accept(read_json_body(self)))
                     return
+                if parsed.path == "/api/validation/model":
+                    self.send_json(store.validation_model.save(read_json_body(self)))
+                    return
+                if parsed.path == "/api/validation/query":
+                    payload = read_json_body(self)
+                    question = str(payload.get("question") or "")
+                    result = self.ready_data().validation_query(question, store.validation_model.load())
+                    self.send_json(result or {"validation": False, "answer": "No validation rule matched this question.", "findings": [], "related_records": []})
+                    return
                 if parsed.path == "/api/ai/search":
                     payload = read_json_body(self)
                     question = str(payload.get("question") or "")
                     mode = str(payload.get("mode") or "")
+                    validation_result = self.ready_data().validation_query(question, store.validation_model.load())
+                    if validation_result:
+                        self.send_json(validation_result)
+                        return
                     self.send_json(store.ai.search(question, self.ready_data().ai_catalog(mode=mode, query=question)))
                     return
                 self.send_json({"error": "Not found"}, status=404)
@@ -2005,6 +2390,8 @@ def make_store_handler(store: DataStore):
                     payload = store.status()
                 elif parsed.path == "/api/ai/status":
                     payload = store.ai.status()
+                elif parsed.path == "/api/validation/model":
+                    payload = store.validation_model.load()
                 elif parsed.path == "/api/project":
                     payload = store.project.summary(store.data, store.status())
                 elif parsed.path == "/api/project/export":
