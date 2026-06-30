@@ -523,6 +523,24 @@
       border-color: var(--accent);
       background: var(--accent-soft);
     }
+    .field-note-button.is-edited {
+      border-color: #d92d20;
+      background: #fff1f0;
+      color: #b42318;
+      font-weight: 800;
+    }
+    .edited-value {
+      color: #b42318;
+      font-weight: 800;
+    }
+    .edited-field {
+      border-color: #f04438;
+      box-shadow: inset 3px 0 0 #f04438;
+    }
+    .patch-current {
+      color: #b42318;
+      font-weight: 800;
+    }
     .table-cell-note {
       display: flex;
       align-items: flex-start;
@@ -825,6 +843,7 @@
       </div>
       <button id="projectBtn" class="source-button" type="button">Review project</button>
       <button id="validationModelBtn" class="source-button" type="button">Data model</button>
+      <button id="exportCorrectedBtn" class="source-button" type="button">Export corrected data</button>
       <button id="changeSourceBtn" class="source-button" type="button">Change source files</button>
     </div>
   </header>
@@ -885,6 +904,7 @@
       rgbMatches: [],
       summary: null,
       project: null,
+      patchesByKey: {},
       navStack: [],
       appBackStack: [],
       appForwardStack: [],
@@ -1161,6 +1181,15 @@
       return state.notesByKey[`${type}:${item.id}`] || { accepted: false, resolved: false, attachments: [] };
     }
 
+    async function refreshPatchIndex() {
+      const data = await api("/api/patches");
+      state.patchesByKey = Object.fromEntries((data.items || []).filter((item) => item.active).map((item) => [item.key, item]));
+    }
+
+    function patchKey(recordType, recordId, fieldKey) {
+      return `${recordType}:${recordId}:${fieldKey}`;
+    }
+
     async function loadSourceStatus() {
       const status = await api("/api/source/status");
       if (!status.ready) {
@@ -1171,6 +1200,7 @@
     }
 
     function renderImport(status) {
+      $("projectSummary").innerHTML = "";
       $("summary").innerHTML = `
         <span class="pill">Data source is not loaded yet</span>
         <span class="pill">${esc(status.data_dir)}</span>
@@ -1199,9 +1229,13 @@
     }
 
     async function changeSourceFiles() {
-      const ok = window.confirm("Clear the currently uploaded source files and import a new JSON set?");
+      const ok = window.confirm("Start a new data browsing project? This clears the uploaded source files, local notes, data corrections and the optional data model. Original JSON files outside this browser are not changed.");
       if (!ok) return;
-      const response = await fetch("/api/source/clear", { method: "POST" });
+      const response = await fetch("/api/source/clear", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reset_review: true }),
+      });
       const data = await response.json();
       if (!response.ok) {
         $("detail").innerHTML = `<div class="warn">${esc(data.error || "Could not clear source files.")}</div>`;
@@ -1209,6 +1243,10 @@
       }
       state.items = [];
       state.selectedId = null;
+      state.notesByKey = {};
+      state.patchesByKey = {};
+      state.project = null;
+      state.validationModel = null;
       renderImport(data);
     }
 
@@ -2390,6 +2428,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       attachColorTileEvents();
       attachCorrectionPanel(data, "color_group");
       attachNavigationControls();
+      applyPatchMarkers();
     }
 
     async function loadDetail(id, options = {}) {
@@ -2493,15 +2532,16 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       const fieldKey = field.key || "";
       const fieldLabel = field.label || "";
       return `<div class="correction-panel" data-correction-panel data-record-type="${esc(recordType)}" data-record-id="${esc(data.id)}" data-record-name="${esc(data.name)}" data-field-key="${esc(fieldKey)}" data-field-label="${esc(fieldLabel)}">
-        ${fieldLabel ? `<div class="field"><div class="field-label">Field</div><div class="field-value">${esc(fieldLabel)}</div></div>` : ""}
-        ${fieldLabel ? `<div data-patch-editor class="field"><div class="field-label">Data correction</div><div class="field-value muted">Loading correction state...</div></div>` : ""}
+        ${fieldLabel ? `<div class="field"><div class="field-label">Edited field</div><div class="field-value">${esc(fieldLabel)}</div></div>` : ""}
+        ${fieldLabel ? `<div data-patch-editor class="field"><div class="field-label">Edit data value</div><div class="field-value muted">Loading editable value...</div></div>` : ""}
+        ${fieldLabel ? "" : `<div class="muted">Edit values directly with the Edit value buttons next to fields and table cells.</div>`}
         ${fieldLabel ? "" : `<label><input type="checkbox" data-record-accepted> Accepted</label>`}
         <label><input type="checkbox" data-correction-required> Requires correction</label>
         <label><input type="checkbox" data-correction-resolved> Corrected / resolved</label>
-        <textarea data-correction-comment placeholder="Describe what should be corrected for this record..."></textarea>
+        <textarea data-correction-comment placeholder="Optional note for this correction..."></textarea>
         <input type="file" data-correction-attachment>
         <div data-correction-attachments></div>
-        <button type="button" data-save-correction>Save note</button>
+        <button type="button" data-save-correction>Save note only</button>
         <div class="muted" data-correction-status></div>
       </div>`;
     }
@@ -2550,13 +2590,13 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       const original = patch.original_value ?? info.current_value ?? "";
       const current = patch.active ? patch.new_value : original;
       host.innerHTML = `
-        <div class="field-label">Data correction</div>
+        <div class="field-label">Edit data value</div>
         <div class="field-value">
-          <div><strong>Before:</strong> ${esc(original)}</div>
-          <div><strong>After:</strong> ${patch.active ? esc(patch.new_value) : `<span class="muted">No active correction</span>`}</div>
+          <div><strong>Original value:</strong> ${esc(original)}</div>
+          <div><strong>Corrected value:</strong> ${patch.active ? `<span class="patch-current">${esc(displayPatchValue(patch.new_value))}</span>` : `<span class="muted">No active correction saved</span>`}</div>
           ${patchInput(info, current)}
           <div class="preview-actions">
-            <button type="button" data-save-patch>Save data correction</button>
+            <button type="button" data-save-patch>Save corrected value</button>
             ${patch.active ? `<button type="button" data-revert-patch>Restore original</button>` : ""}
           </div>
           <div class="muted" data-patch-status>${patch.active ? "Correction is active and will be included in corrected export." : "Original data is unchanged."}</div>
@@ -2573,15 +2613,23 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
           field_label: context.fieldLabel,
           new_value: newValue,
         });
+        state.patchesByKey[saved.key] = saved;
+        markPatchedField(context.recordType, context.data.id, context.fieldKey, saved.new_value);
         renderPatchEditor(panel, saved, context);
       });
       const revertButton = host.querySelector("[data-revert-patch]");
       if (revertButton) {
         revertButton.addEventListener("click", async () => {
           const reverted = await apiPost("/api/patches/revert", { key: patch.key });
+          delete state.patchesByKey[patch.key];
+          unmarkPatchedField(context.recordType, context.data.id, context.fieldKey, original);
           renderPatchEditor(panel, { ...patch, ...reverted, active: false, new_value: original }, context);
         });
       }
+    }
+
+    function displayPatchValue(value) {
+      return Array.isArray(value) ? value.join(", ") : value;
     }
 
     function patchInput(info, value) {
@@ -2624,20 +2672,73 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
 
     function fieldNoteButton(recordType, data, fieldKey, fieldLabel) {
       if (!data || !fieldKey || !fieldLabel) return "";
+      const activePatch = state.patchesByKey[patchKey(recordType, data.id, fieldKey)];
       return `<button class="field-note-button" type="button"
-        title="Add note for this field"
+        title="Edit data value and add note for this field"
         data-field-note
         data-record-type="${esc(recordType)}"
         data-record-id="${esc(data.id)}"
         data-record-name="${esc(data.name)}"
         data-field-key="${esc(fieldKey)}"
-        data-field-label="${esc(fieldLabel)}">Note</button>`;
+        data-field-label="${esc(fieldLabel)}">${activePatch ? "Edited" : "Edit value"}</button>`;
     }
 
     function attachFieldNoteButtons(root = document) {
       for (const button of root.querySelectorAll("[data-field-note]")) {
         button.addEventListener("click", () => openFieldNoteModal(button.dataset));
       }
+      applyPatchMarkers(root);
+    }
+
+    function applyPatchMarkers(root = document) {
+      for (const button of root.querySelectorAll("[data-field-note]")) {
+        const patch = state.patchesByKey[patchKey(button.dataset.recordType, button.dataset.recordId, button.dataset.fieldKey)];
+        if (patch) markButtonPatched(button, patch.new_value);
+      }
+    }
+
+    function markPatchedField(recordType, recordId, fieldKey, value) {
+      for (const button of document.querySelectorAll("[data-field-note]")) {
+        if (button.dataset.recordType === String(recordType) && button.dataset.recordId === String(recordId) && button.dataset.fieldKey === String(fieldKey)) {
+          markButtonPatched(button, value);
+        }
+      }
+    }
+
+    function unmarkPatchedField(recordType, recordId, fieldKey, originalValue) {
+      for (const button of document.querySelectorAll("[data-field-note]")) {
+        if (button.dataset.recordType === String(recordType) && button.dataset.recordId === String(recordId) && button.dataset.fieldKey === String(fieldKey)) {
+          button.classList.remove("is-edited");
+          button.textContent = "Edit value";
+          const valueNode = editableValueNode(button);
+          if (valueNode) {
+            valueNode.classList.remove("edited-value");
+            valueNode.textContent = displayPatchValue(originalValue) ?? "";
+          }
+          const fieldNode = button.closest(".field");
+          if (fieldNode) fieldNode.classList.remove("edited-field");
+        }
+      }
+    }
+
+    function markButtonPatched(button, value) {
+      button.classList.add("is-edited");
+      button.textContent = "Edited";
+      const valueNode = editableValueNode(button);
+      if (valueNode) {
+        valueNode.classList.add("edited-value");
+        valueNode.textContent = displayPatchValue(value) ?? "";
+      }
+      const fieldNode = button.closest(".field");
+      if (fieldNode) fieldNode.classList.add("edited-field");
+    }
+
+    function editableValueNode(button) {
+      const tableCell = button.closest(".table-cell-note");
+      if (tableCell) return tableCell.querySelector("[data-field-display]") || tableCell.querySelector("span");
+      const field = button.closest(".field");
+      if (field) return field.querySelector(".field-value");
+      return null;
     }
 
     async function openFieldNoteModal(dataset) {
@@ -2650,7 +2751,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         key: dataset.fieldKey || "",
         label: dataset.fieldLabel || "",
       };
-      $("modalTitle").textContent = `Field note - ${field.label}`;
+      $("modalTitle").textContent = `Edit data field - ${field.label}`;
       $("modalBody").innerHTML = correctionPanel(recordType, data, field);
       $("modalBackdrop").hidden = false;
       await attachCorrectionPanel(data, recordType, $("modalBody"));
@@ -3309,6 +3410,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
     $("appForwardBtn").addEventListener("click", () => appHistoryForward());
     $("projectBtn").addEventListener("click", () => openProjectModal());
     $("validationModelBtn").addEventListener("click", () => openValidationModelModal());
+    $("exportCorrectedBtn").addEventListener("click", () => { window.location.href = "/api/export/corrected-data.zip"; });
     $("changeSourceBtn").addEventListener("click", () => changeSourceFiles());
     $("aiSearchBtn").addEventListener("click", () => runAiSearch());
     $("modalCloseBtn").addEventListener("click", () => closeModal());
@@ -3333,6 +3435,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       await loadProject();
       await loadValidationModel();
       await loadAiStatus();
+      await refreshPatchIndex();
       await loadList();
       updateAppNavigationButtons();
     }

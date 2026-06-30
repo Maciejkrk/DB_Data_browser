@@ -2926,12 +2926,17 @@ class DataStore:
         status["skipped"] = skipped
         return status
 
-    def clear(self) -> dict:
+    def clear(self, reset_review: bool = False) -> dict:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         for filename in REQUIRED_FILES:
             path = self.data_dir / filename
             if path.exists():
                 path.unlink()
+        if reset_review:
+            for filename in (NOTES_FILE, PROJECT_FILE, VALIDATION_MODEL_FILE, DATA_PATCHES_FILE):
+                path = self.data_dir / filename
+                if path.exists():
+                    path.unlink()
         self.reload()
         return self.status()
 
@@ -3060,7 +3065,7 @@ def make_store_handler(store: DataStore):
                     self.handle_upload()
                     return
                 if parsed.path == "/api/source/clear":
-                    self.send_json(store.clear())
+                    self.send_json(store.clear(bool(read_json_body(self).get("reset_review"))))
                     return
                 if parsed.path == "/api/notes":
                     self.send_json(store.notes.save_note(read_json_body(self)))
