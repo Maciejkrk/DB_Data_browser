@@ -2789,9 +2789,12 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       }
     }
 
-    function displayPatchValue(value, info = {}) {
+    function displayPatchValue(value, info = {}, fallbackDisplay = "") {
       const raw = Array.isArray(value) ? value.join(", ") : value;
-      if ((info.input_type || "") !== "product") return raw;
+      const looksLikeProductValue = /^\s*\d+(?:\s*\(\d+\))?\s*$/.test(String(raw ?? ""));
+      if ((info.input_type || "") !== "product") {
+        return fallbackDisplay && looksLikeProductValue ? fallbackDisplay : raw;
+      }
       return productPatchLabel(raw, info);
     }
 
@@ -2846,7 +2849,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         const valueNode = editableValueNode(button);
         if (valueNode) {
           valueNode.dataset.previewValue = valueNode.textContent;
-          valueNode.textContent = button.dataset.fieldCurrent || displayPatchValue(patch?.original_value ?? "");
+          valueNode.textContent = button.dataset.fieldDisplayValue || button.dataset.fieldCurrent || displayPatchValue(patch?.original_value ?? "");
           valueNode.classList.remove("edited-value");
         }
         button.disabled = true;
@@ -2854,7 +2857,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         button.classList.add("is-preview-correction");
         if (patch) {
           button.textContent = "Correction";
-          button.title = `Correction exists. Corrected value: ${displayPatchValue(patch.new_value ?? "")}`;
+          button.title = `Correction exists. Corrected value: ${displayPatchValue(patch.new_value ?? "", patch.field_info || {}, button.dataset.fieldDisplayValue || "")}`;
           button.hidden = false;
         } else {
           button.hidden = true;
@@ -3033,7 +3036,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       return input.value;
     }
 
-    function fieldNoteButton(recordType, data, fieldKey, fieldLabel, currentValue = "") {
+    function fieldNoteButton(recordType, data, fieldKey, fieldLabel, currentValue = "", displayValue = "") {
       if (!data || !fieldKey || !fieldLabel) return "";
       const activePatch = state.patchesByKey[patchKey(recordType, data.id, fieldKey)];
       return `<button class="field-note-button" type="button"
@@ -3044,7 +3047,8 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         data-record-name="${esc(data.name)}"
         data-field-key="${esc(fieldKey)}"
         data-field-label="${esc(fieldLabel)}"
-        data-field-current="${esc(currentValue)}">${activePatch ? "Edited" : "Edit value"}</button>`;
+        data-field-current="${esc(currentValue)}"
+        data-field-display-value="${esc(displayValue || currentValue)}">${activePatch ? "Edited" : "Edit value"}</button>`;
     }
 
     function attachFieldNoteButtons(root = document) {
@@ -3112,7 +3116,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
           const valueNode = editableValueNode(button);
           if (valueNode) {
             valueNode.classList.remove("edited-value");
-            valueNode.textContent = displayPatchValue(originalValue) ?? "";
+            valueNode.textContent = displayPatchValue(originalValue, {}, button.dataset.fieldDisplayValue || "") ?? "";
           }
           const fieldNode = button.closest(".field");
           if (fieldNode) fieldNode.classList.remove("edited-field");
@@ -3126,8 +3130,10 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       const valueNode = editableValueNode(button);
       if (valueNode) {
         const patch = state.patchesByKey[patchKey(button.dataset.recordType, button.dataset.recordId, button.dataset.fieldKey)];
+        const info = patch?.field_info || {};
+        const fallbackDisplay = button.dataset.fieldDisplayValue || "";
         valueNode.classList.add("edited-value");
-        valueNode.textContent = displayPatchValue(value, patch?.field_info || {}) ?? "";
+        valueNode.textContent = displayPatchValue(value, info, fallbackDisplay) ?? "";
       }
       const fieldNode = button.closest(".field");
       if (fieldNode) fieldNode.classList.add("edited-field");
@@ -3835,7 +3841,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         : esc(value);
       return `<div class="field">
         <div class="field-label"><span>${esc(label)}</span></div>
-        <div class="field-value"><span data-field-display>${valueHtml}</span> ${fieldNoteButton(recordType, data, key, label, editValue)}</div>
+        <div class="field-value"><span data-field-display>${valueHtml}</span> ${fieldNoteButton(recordType, data, key, label, editValue, displayValue)}</div>
       </div>`;
     }
 
