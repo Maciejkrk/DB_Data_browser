@@ -118,6 +118,20 @@ def apply_typed_value(target: dict, value: object, attr_def: dict | None = None)
         target[key] = typed_value
 
 
+def apply_product_value(target: dict, value: object) -> None:
+    text = str(value or "").strip()
+    match = re.search(r"(\d+)(?:\s*[\(:/,;-]\s*(\d+)\s*\)?)?", text)
+    if not match:
+        apply_typed_value(target, value, None)
+        return
+    target["varcharValue"] = ""
+    target["TextValue"] = None
+    target["IntValue"] = int(match.group(1))
+    target["IntValue2"] = int(match.group(2)) if match.group(2) else None
+    target["NumberValue"] = None
+    target["BooleanValue"] = False
+
+
 def notes_as_csv(notes: list[dict]) -> str:
     output = io.StringIO()
     writer = csv.DictWriter(
@@ -276,7 +290,7 @@ def latest_attrs(record: dict) -> list[dict]:
 
 def values_for_parent(all_attrs: list[dict], parent_id: int, attr_defs: dict[int, dict]) -> list[dict]:
     values = []
-    for attr in all_attrs:
+    for attr_index, attr in enumerate(all_attrs):
         if int(attr.get("ParentAttributeId") or 0) != parent_id:
             continue
         attr_id = int(attr.get("AttributeId") or 0)
@@ -293,6 +307,7 @@ def values_for_parent(all_attrs: list[dict], parent_id: int, attr_defs: dict[int
                 "attribute_name": (attr_defs.get(attr_id) or {}).get("AttributeName"),
                 "value": value,
                 "row": attr.get("RowI") or 0,
+                "attr_index": attr_index,
                 "hash": attr.get("hash"),
                 "parent_hash": attr.get("parentHash"),
                 "raw": {
@@ -1982,6 +1997,8 @@ class PimData:
             return "multi"
         if attr_type in {"boolean", "checkbox"}:
             return "boolean"
+        if attr_type == "product":
+            return "product"
         if attr_type in {"number", "decimal", "float", "double", "integer", "int"}:
             return "number"
         return "text"
@@ -1996,6 +2013,15 @@ class PimData:
 
     def find_edit_attribute(self, record: dict, attr_defs: dict[int, dict], field_key: str) -> dict | None:
         attrs = latest_attrs(record)
+        index_match = re.search(r":attr_index:(\d+)", field_key)
+        if index_match:
+            index = int(index_match.group(1))
+            return attrs[index] if 0 <= index < len(attrs) else None
+        hash_match = re.search(r":hash:([^:]+):column:(\d+)", field_key)
+        if hash_match:
+            row_hash = hash_match.group(1)
+            attr_id = int(hash_match.group(2))
+            return next((attr for attr in attrs if int(attr.get("AttributeId") or 0) == attr_id and str(attr.get("Hash") or "") == row_hash), None)
         row_match = re.search(r":row:([^:]+):column:(\d+)", field_key)
         if row_match:
             row = int(number_or_none(row_match.group(1)) or 0)
@@ -2050,6 +2076,9 @@ class PimData:
         if not attr:
             return
         attr_id = int(attr.get("AttributeId") or 0)
+        if normalize_query_text((attr_defs.get(attr_id) or {}).get("AttributeType")) == "product":
+            apply_product_value(attr, patch.get("new_value"))
+            return
         apply_typed_value(attr, patch.get("new_value"), attr_defs.get(attr_id))
 
     def build_product_color_usage(self) -> dict[str, list[dict]]:
@@ -2322,6 +2351,11 @@ class PimData:
                             "product_name": product_name(linked_product, self.product_attr_defs, self.product_name_attribute_ids) if linked_product else product_item.get("value") if product_item else "",
                             "variant": product_variant,
                             "default": bool(default_item.get("value")) if default_item else False,
+                            "row": available.get("row"),
+                            "hash": available.get("hash"),
+                            "attr_index": product_item.get("attr_index") if product_item else None,
+                            "product_attribute_id": product_item.get("attribute_id") if product_item else None,
+                            "field_key": f"table:Available products:attr_index:{product_item.get('attr_index')}" if product_item else "",
                         }
                     )
                 variant_layers.append(

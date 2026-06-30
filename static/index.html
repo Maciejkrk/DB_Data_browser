@@ -2904,6 +2904,12 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       if (inputType === "boolean") {
         return `<label><input type="checkbox" data-patch-value${value === true || String(value).toLowerCase() === "true" ? " checked" : ""}> New value</label>`;
       }
+      if (inputType === "product") {
+        return `<label>New product assignment
+          <input data-patch-value type="text" value="${esc(value ?? "")}" placeholder="Product ID or Product ID (variant ID)">
+          <span class="muted">Example: 6089 or 6089 (8). This changes the product assignment in this layer option.</span>
+        </label>`;
+      }
       if (inputType !== "number") {
         return `<label>New value
           <textarea data-patch-value spellcheck="false">${esc(value ?? "")}</textarea>
@@ -3594,7 +3600,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
                 <tr>
                   <td>${esc(layer.position || layer.row)}</td>
                   <td><strong>${esc(layer.name)}</strong></td>
-                  <td>${productSelector(layer.products || [])} ${fieldNoteButton("system", data, `variant:${variant.name}:row:${layer.row}:products`, `${variant.name} / row ${layer.row} / products`, (layer.products || []).map((item) => item.product_name || item.product_id).join(", "))}</td>
+                  <td>${productSelector(layer.products || [], data, variant, layer)}</td>
                 </tr>
               `).join("")}</tbody>
             </table>
@@ -3603,16 +3609,19 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       `).join("");
     }
 
-    function productSelector(products) {
+    function productSelector(products, data = null, variant = {}, layer = {}) {
       if (!products.length) return `<span class="muted">No assigned products</span>`;
       const options = products.map((item, index) => {
         const label = `${item.product_name || item.product_id}${item.variant ? ` / variant ${item.variant}` : ""}${item.default ? " / default" : ""}`;
         return `<option value="${index}">${esc(label)}</option>`;
       }).join("");
       const chips = products.map((item) => `
-        ${item.linked_product_id
-          ? `<button class="product-chip" type="button" data-linked-product-id="${esc(item.linked_product_id)}">${esc(item.product_name || item.product_id)}${item.variant ? `, variant ${esc(item.variant)}` : ""}</button>`
-          : `<span class="product-chip">${esc(item.product_name || item.product_id)}${item.variant ? `, variant ${esc(item.variant)}` : ""}</span>`}
+        <span class="table-cell-note">
+          ${item.linked_product_id
+            ? `<button class="product-chip" type="button" data-linked-product-id="${esc(item.linked_product_id)}">${esc(item.product_name || item.product_id)}${item.variant ? `, variant ${esc(item.variant)}` : ""}</button>`
+            : `<span class="product-chip">${esc(item.product_name || item.product_id)}${item.variant ? `, variant ${esc(item.variant)}` : ""}</span>`}
+          ${item.field_key ? fieldNoteButton("system", data, item.field_key, `${variant.name || "Variant"} / ${layer.name || "layer"} / product`, `${item.product_id || ""}${item.variant ? ` (${item.variant})` : ""}`) : ""}
+        </span>
       `).join("");
       return `<div class="product-choice"><select>${options}</select><div>${chips}</div></div>`;
     }
