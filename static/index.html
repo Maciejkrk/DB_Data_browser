@@ -626,10 +626,36 @@
     }
     details { margin-top: 12px; }
     summary {
+      display: flex;
+      align-items: center;
+      gap: 8px;
       padding: 11px 12px;
       background: var(--ink-soft);
       cursor: pointer;
       font-weight: 800;
+      list-style: none;
+      user-select: none;
+    }
+    summary::-webkit-details-marker {
+      display: none;
+    }
+    summary::before {
+      content: ">";
+      display: inline-grid;
+      place-items: center;
+      width: 18px;
+      height: 18px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      color: var(--accent);
+      background: #fff;
+      font-size: 12px;
+      line-height: 1;
+      transition: transform .15s ease;
+      flex: 0 0 auto;
+    }
+    details[open] > summary::before {
+      transform: rotate(90deg);
     }
     table {
       width: 100%;
@@ -1688,7 +1714,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
 
     function validationFindings(findings) {
       if (!findings.length) return "";
-      return `<details open>
+      return `<details>
         <summary>Data query results (${findings.length})</summary>
         <div class="data-table">
           <table>
@@ -1708,7 +1734,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
 
     function aiRelatedRecords(records) {
       if (!records.length) return "";
-      return `<details open>
+      return `<details>
         <summary>Related records (${records.length})</summary>
         <div class="relation-list">${records.map((record) => `
           <button class="relation-item" type="button" data-ai-record="${esc(record.mode)}:${esc(record.kind)}:${esc(record.id)}">
@@ -2271,7 +2297,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
     }
 
     function renderColorSearchMatches(items, title) {
-      return `<details open>
+      return `<details>
         <summary>${esc(title)} (${items.length})</summary>
         <div class="color-gallery">${items.map((item) => `
           <div class="color-tile">
@@ -3515,7 +3541,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         .map((parameter) => items.find((item) => item.parameter === parameter))
         .filter(Boolean);
       if (!ordered.length) return "";
-      return `<details open>
+      return `<details>
         <summary>Material maps (${ordered.length})</summary>
         <div class="media-grid">${ordered.map((item) => `
           <div class="media-card">
@@ -3531,7 +3557,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       const structures = links.structures || [];
       const groups = links.groups || [];
       if (!structures.length && !groups.length) return "";
-      return `<details open>
+      return `<details>
         <summary>Product visual attributes</summary>
         ${structures.length ? `<h2>Direct visual attributes</h2><div class="color-gallery">${structures.map((item) => `
           <div class="color-tile"><button type="button" data-color-id="${esc(item.id)}">${colorTilePreview(item)}<div class="color-tile-body"><strong>${esc(item.name)}</strong></div></button></div>
@@ -3550,7 +3576,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       const products = data.used_by_products || [];
       const groups = data.groups || [];
       if (!products.length && !groups.length) return "";
-      return `<details open>
+      return `<details>
         <summary>Relations</summary>
         ${groups.length ? `<h2>Groups</h2><div class="relation-list">${groups.map((group) => `<div class="relation-item">${esc(group.name)}</div>`).join("")}</div>` : ""}
         ${products.length ? `<h2>Products</h2><div class="relation-list">${products.map((product) => `
@@ -3632,7 +3658,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
 
     function selectionAttributesTable(items, recordType = "", data = null) {
       if (!items || !items.length) return "";
-      return `<details open>
+      return `<details>
         <summary>Selection attributes (${items.length})</summary>
         <div class="data-table">
           <table>
@@ -3651,7 +3677,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
 
     function tableBlock(title, table, recordType = "", data = null) {
       if (!table || !table.rows || !table.rows.length) return "";
-      return `<details open>
+      return `<details>
         <summary>${esc(title)} (${table.rows.length})</summary>
         <div class="data-table">
           <table>
@@ -3716,7 +3742,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
 
     function modelTree(nodes, recordType = "", data = null) {
       if (!nodes || !nodes.length) return "";
-      return `<details open>
+      return `<details>
         <summary>Model tree</summary>
         <div class="model-tree">${nodes.map((node) => modelTreeNode(node, recordType, data, 1)).join("")}</div>
       </details>`;
@@ -3745,7 +3771,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
             data-field-base-key="${esc(addProductBaseKey)}"
             data-field-label="${esc(`Add product to ${node.label || "model array"}`)}">Add product</button>`
         : "";
-      return `<details class="model-tree-node" data-model-level="${esc(level)}"${level <= 2 ? " open" : ""}>
+      return `<details class="model-tree-node" data-model-level="${esc(level)}">
         <summary>
           <span>${esc(node.label || "Model array")}</span>
           <span class="muted">Level ${esc(level)} / ${esc(rows.length)} item${rows.length === 1 ? "" : "s"}</span>
@@ -3781,7 +3807,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
     }
 
     function modelTreeRow(row, recordType = "", data = null, level = 1) {
-      return `<details class="model-tree-row"${level <= 2 ? " open" : ""}>
+      return `<details class="model-tree-row">
         <summary>
           <strong>${esc(row.label || `Row ${row.row}`)}</strong>
           <span class="muted">Row ${esc(row.row ?? "")}</span>
@@ -3852,7 +3878,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
 
     function section(title, rows, recordType = "", data = null) {
       if (!rows || !rows.length) return "";
-      return `<details open>
+      return `<details>
         <summary>${esc(title)} (${rows.length})</summary>
         <table>
           <thead><tr><th>Row</th><th>Fields</th></tr></thead>
@@ -3868,7 +3894,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
 
     function filesSection(files, recordType = "", data = null) {
       if (!files.length) return "";
-      return `<details open>
+      return `<details>
         <summary>Files (${files.length})</summary>
         <table>
           <thead><tr><th>Name</th><th>Address</th></tr></thead>
