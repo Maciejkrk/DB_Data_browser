@@ -529,18 +529,23 @@
       color: #b42318;
       font-weight: 800;
     }
-    .loaded-preview-badge {
-      display: inline-block;
-      width: auto;
-      flex: 0 0 auto;
-      padding: 2px 6px;
-      border: 1px solid #fecdca;
-      border-radius: 4px;
+    .field-note-button.is-preview-correction {
+      border-color: #fecdca;
       background: #fff1f0;
       color: #b42318;
-      font-size: 11px;
       font-weight: 800;
-      line-height: 1.2;
+      cursor: default;
+    }
+    .field-note-button.is-preview-correction:disabled {
+      opacity: 1;
+    }
+    .original-preview-banner {
+      padding: 8px 10px;
+      border: 1px solid #fecdca;
+      border-radius: 4px;
+      background: #fff7f6;
+      color: #7a271a;
+      font-weight: 700;
     }
     .edited-value {
       color: #b42318;
@@ -2610,15 +2615,6 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       const fieldKey = field.key || "";
       const fieldLabel = field.label || "";
       const fieldCurrent = field.current ?? "";
-      if (!fieldKey && isLoadedDataPreview(recordType, data.id)) {
-        return `<div class="correction-panel loaded-data-preview" data-correction-panel data-record-type="${esc(recordType)}" data-record-id="${esc(data.id)}">
-          <div class="field">
-            <div class="field-label">Original data preview</div>
-            <div class="field-value muted">Original values from the imported files are shown. Editing is disabled in this preview.</div>
-          </div>
-          <button type="button" data-disable-loaded-preview>Exit preview and continue editing</button>
-        </div>`;
-      }
       return `<div class="correction-panel" data-correction-panel data-record-type="${esc(recordType)}" data-record-id="${esc(data.id)}" data-record-name="${esc(data.name)}" data-field-key="${esc(fieldKey)}" data-field-label="${esc(fieldLabel)}" data-field-current="${esc(fieldCurrent)}">
         ${fieldLabel ? `<div class="field"><div class="field-label">Edited field</div><div class="field-value">${esc(fieldLabel)}</div></div>` : ""}
         ${fieldLabel ? `<div data-patch-editor class="field"><div class="field-label">Edit data value</div><div class="field-value muted">Loading editable value...</div></div>` : ""}
@@ -2641,11 +2637,6 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       const fieldKey = panel.dataset.fieldKey || "";
       const fieldLabel = panel.dataset.fieldLabel || "";
       const fieldCurrent = panel.dataset.fieldCurrent || "";
-      const loadedPreviewButton = panel.querySelector("[data-disable-loaded-preview]");
-      if (loadedPreviewButton) {
-        loadedPreviewButton.addEventListener("click", () => disableLoadedDataPreview(recordType, data));
-        return;
-      }
       const note = await api(`/api/notes/${recordType}/${data.id}${fieldKey ? `?field_key=${encodeURIComponent(fieldKey)}` : ""}`);
       const patch = fieldKey ? await api(`/api/patches/${recordType}/${data.id}?field_key=${encodeURIComponent(fieldKey)}`) : null;
       const acceptedInput = panel.querySelector("[data-record-accepted]");
@@ -2741,13 +2732,86 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
     async function enableLoadedDataPreview(recordType, data) {
       state.loadedDataPreviewKey = recordPreviewKey(recordType, data.id);
       await refreshPatchIndex();
-      await renderRecordIntoDetail(recordType, await fetchRecordData(recordType, data.id));
+      applyOriginalDataPreview(recordType, data.id);
     }
 
     async function disableLoadedDataPreview(recordType, data) {
       if (isLoadedDataPreview(recordType, data.id)) state.loadedDataPreviewKey = "";
       await refreshPatchIndex();
-      await renderRecordIntoDetail(recordType, await fetchRecordData(recordType, data.id));
+      restoreCorrectedDataView(recordType, data.id);
+    }
+
+    function applyOriginalDataPreview(recordType, recordId) {
+      const panels = [...document.querySelectorAll("[data-correction-panel]")]
+        .filter((panel) => panel.dataset.recordType === String(recordType) && panel.dataset.recordId === String(recordId) && !panel.dataset.fieldKey);
+      for (const panel of panels) {
+        if (!panel.querySelector("[data-original-preview-banner]")) {
+          panel.insertAdjacentHTML("afterbegin", `<div class="original-preview-banner" data-original-preview-banner>Original data preview is active. Original imported values are shown and editing is disabled.</div>`);
+        }
+        for (const control of panel.querySelectorAll("input, textarea, button")) {
+          if (control.matches("[data-enable-loaded-preview]")) {
+            control.textContent = "Exit preview and continue editing";
+            control.dataset.previewExit = "true";
+            control.disabled = false;
+          } else {
+            control.disabled = true;
+          }
+        }
+      }
+      for (const button of document.querySelectorAll("[data-field-note]")) {
+        if (button.dataset.recordType !== String(recordType) || button.dataset.recordId !== String(recordId)) continue;
+        const patch = state.patchesByKey[patchKey(recordType, recordId, button.dataset.fieldKey)];
+        const valueNode = editableValueNode(button);
+        if (valueNode) {
+          valueNode.dataset.previewValue = valueNode.textContent;
+          valueNode.textContent = button.dataset.fieldCurrent || displayPatchValue(patch?.original_value ?? "");
+          valueNode.classList.remove("edited-value");
+        }
+        button.disabled = true;
+        button.classList.remove("is-edited");
+        button.classList.add("is-preview-correction");
+        if (patch) {
+          button.textContent = "Correction";
+          button.title = `Correction exists. Corrected value: ${displayPatchValue(patch.new_value ?? "")}`;
+          button.hidden = false;
+        } else {
+          button.hidden = true;
+        }
+      }
+    }
+
+    function restoreCorrectedDataView(recordType, recordId) {
+      for (const panel of document.querySelectorAll("[data-correction-panel]")) {
+        if (panel.dataset.recordType !== String(recordType) || panel.dataset.recordId !== String(recordId) || panel.dataset.fieldKey) continue;
+        const banner = panel.querySelector("[data-original-preview-banner]");
+        if (banner) banner.remove();
+        for (const control of panel.querySelectorAll("input, textarea, button")) {
+          control.disabled = false;
+          if (control.matches("[data-enable-loaded-preview]")) {
+            control.textContent = "Original data preview";
+            delete control.dataset.previewExit;
+          }
+        }
+      }
+      for (const button of document.querySelectorAll("[data-field-note]")) {
+        if (button.dataset.recordType !== String(recordType) || button.dataset.recordId !== String(recordId)) continue;
+        button.hidden = false;
+        button.disabled = false;
+        button.classList.remove("is-preview-correction");
+        button.title = "Edit data value and add note for this field";
+        const valueNode = editableValueNode(button);
+        if (valueNode?.dataset.previewValue !== undefined) {
+          valueNode.textContent = valueNode.dataset.previewValue;
+          delete valueNode.dataset.previewValue;
+        }
+        const patch = state.patchesByKey[patchKey(recordType, recordId, button.dataset.fieldKey)];
+        if (patch) markButtonPatched(button, patch.new_value);
+        else {
+          button.classList.remove("is-edited");
+          button.textContent = "Edit value";
+        }
+      }
+      applyActiveRecordCorrections(recordType, recordId);
     }
 
     function activeRecordPatches(recordType, recordId) {
@@ -2785,7 +2849,10 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
           </table>
         </div>
       `;
-      host.querySelector("[data-enable-loaded-preview]").addEventListener("click", () => enableLoadedDataPreview(recordType, data));
+      host.querySelector("[data-enable-loaded-preview]").addEventListener("click", (event) => {
+        if (event.currentTarget.dataset.previewExit === "true") disableLoadedDataPreview(recordType, data);
+        else enableLoadedDataPreview(recordType, data);
+      });
       host.querySelector("[data-revert-record-patches]").addEventListener("click", async () => {
         const ok = window.confirm(`Restore all active corrections for ${data.name || data.id}?`);
         if (!ok) return;
@@ -2860,9 +2927,6 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
     function fieldNoteButton(recordType, data, fieldKey, fieldLabel, currentValue = "") {
       if (!data || !fieldKey || !fieldLabel) return "";
       const activePatch = state.patchesByKey[patchKey(recordType, data.id, fieldKey)];
-      if (isLoadedDataPreview(recordType, data.id)) {
-        return activePatch ? `<span class="loaded-preview-badge" title="Correction exists. Corrected value: ${esc(displayPatchValue(activePatch.new_value ?? ""))}">Correction</span>` : "";
-      }
       return `<button class="field-note-button" type="button"
         title="Edit data value and add note for this field"
         data-field-note
