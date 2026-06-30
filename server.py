@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import base64
 import cgi
+import copy
 import csv
 import ipaddress
 import io
@@ -2493,8 +2494,8 @@ class PimData:
             items.append(self.color_group_detail(int(group["Id"]), compact=True))
         return {"items": items}
 
-    def system_detail(self, element_id: int, compact: bool = False) -> dict:
-        element = self.element_index[element_id]
+    def system_detail(self, element_id: int, compact: bool = False, element_override: dict | None = None) -> dict:
+        element = element_override or self.element_index[element_id]
         versions = element.get("dataVersions") or [{}]
         latest_version = versions[-1] if versions else {}
         attrs = latest_attrs(element)
@@ -3234,6 +3235,18 @@ class DataStore:
             raise ValueError("Data source is not ready")
         return self.data.corrected_payload(filename, self.patches.active_patches())
 
+    def system_detail(self, element_id: int, corrected: bool = True) -> dict:
+        if not self.data:
+            raise ValueError("Data source is not ready")
+        if not corrected:
+            return self.data.system_detail(element_id)
+        element = copy.deepcopy(self.data.element_index[element_id])
+        for patch in self.patches.active_patches("system"):
+            if int(patch.get("record_id") or 0) != int(element_id):
+                continue
+            self.data.apply_patch_to_record("system", element, self.data.element_attr_defs, patch)
+        return self.data.system_detail(element_id, element_override=element)
+
     def corrected_zip(self) -> bytes:
         output = io.BytesIO()
         with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
@@ -3462,7 +3475,8 @@ def make_store_handler(store: DataStore):
                 elif parsed.path == "/api/systems":
                     payload = self.ready_data().list_systems(query=query, filters=selected_filters(qs))
                 elif parsed.path.startswith("/api/systems/"):
-                    payload = self.ready_data().system_detail(int(unquote(parsed.path.rsplit("/", 1)[-1])))
+                    corrected = qs.get("corrected", ["1"])[0] != "0"
+                    payload = store.system_detail(int(unquote(parsed.path.rsplit("/", 1)[-1])), corrected=corrected)
                 elif parsed.path == "/api/colors":
                     payload = self.ready_data().list_colors(query=query, kind=qs.get("kind", [""])[0])
                 elif parsed.path.startswith("/api/colors/"):

@@ -2774,6 +2774,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         markPatchedField(context.recordType, context.data.id, context.fieldKey, saved.new_value);
         refreshVisibleRecordPatchSummaries(context.recordType, context.data);
         refreshVisibleAppendProductPatches(context.recordType, context.data);
+        await refreshOpenDetailRecord(context.recordType, context.data.id);
         renderPatchEditor(panel, saved, context);
       });
       const revertButton = host.querySelector("[data-revert-patch]");
@@ -2784,9 +2785,16 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
           unmarkPatchedField(context.recordType, context.data.id, context.fieldKey, original);
           refreshVisibleRecordPatchSummaries(context.recordType, context.data);
           refreshVisibleAppendProductPatches(context.recordType, context.data);
+          await refreshOpenDetailRecord(context.recordType, context.data.id);
           renderPatchEditor(panel, { ...patch, ...reverted, active: false, new_value: original }, context);
         });
       }
+    }
+
+    async function refreshOpenDetailRecord(recordType, recordId) {
+      if (state.detailView !== "detail" || String(state.selectedId) !== String(recordId)) return;
+      const refreshed = await fetchRecordData(recordType, recordId);
+      await renderRecordIntoDetail(recordType, refreshed);
     }
 
     function displayPatchValue(value, info = {}, fallbackDisplay = "") {
@@ -2849,7 +2857,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         const valueNode = editableValueNode(button);
         if (valueNode) {
           valueNode.dataset.previewValue = valueNode.textContent;
-          valueNode.textContent = button.dataset.fieldDisplayValue || button.dataset.fieldCurrent || displayPatchValue(patch?.original_value ?? "");
+          valueNode.textContent = patch?.original_display_value ?? (button.dataset.fieldDisplayValue || button.dataset.fieldCurrent || displayPatchValue(patch?.original_value ?? ""));
           valueNode.classList.remove("edited-value");
         }
         button.disabled = true;
