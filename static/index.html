@@ -2763,11 +2763,16 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
 
     function displayPatchValue(value, info = {}) {
       const raw = Array.isArray(value) ? value.join(", ") : value;
-      return (info.input_type || "") === "product" ? hideProductApprovalValue(raw) : raw;
+      if ((info.input_type || "") !== "product") return raw;
+      return productPatchLabel(raw, info);
     }
 
-    function hideProductApprovalValue(value) {
-      return String(value ?? "").replace(/\s*\(\d+\)\s*$/, "");
+    function productPatchLabel(value, info = {}) {
+      const productId = String(value ?? "").match(/\d+/)?.[0] || "";
+      if (!productId) return "";
+      const option = (info.options || []).find((item) => String(item.id) === productId);
+      if (!option) return productId;
+      return String(option.label || productId).replace(/^\s*\d+\s*-\s*/, "");
     }
 
     function recordPreviewKey(recordType, recordId) {
