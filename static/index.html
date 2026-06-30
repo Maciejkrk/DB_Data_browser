@@ -1660,7 +1660,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       const current = selected[0] || "";
       return `<select data-filter-id="${esc(filter.id)}" data-filter-type="single">
         <option value="">Any</option>
-        ${(filter.values || []).map((item) => `<option value="${esc(item.value)}"${item.value === current ? " selected" : ""}>${esc(item.value)} (${esc(item.count)})</option>`).join("")}
+        ${(filter.values || []).map((item) => `<option value="${esc(item.value)}"${item.value === current ? " selected" : ""}>${esc(item.label || item.value)} (${esc(item.count)})</option>`).join("")}
       </select>`;
     }
 
@@ -1669,7 +1669,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       return (filter.values || []).map((item) => `
         <label class="filter-option">
           <input type="checkbox" data-filter-id="${esc(filter.id)}" data-filter-type="multi" value="${esc(item.value)}"${current.has(item.value) ? " checked" : ""}>
-          <span>${esc(item.value)} <span class="filter-count">(${esc(item.count)})</span></span>
+          <span>${esc(item.label || item.value)} <span class="filter-count">(${esc(item.count)})</span></span>
         </label>
       `).join("");
     }
@@ -1738,6 +1738,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
             <input class="result-select" type="checkbox" data-select-record="${esc(item.id)}"${selected ? " checked" : ""}>
             ${item.thumbnail ? `<img src="${esc(item.thumbnail)}" alt="${esc(item.name)}">` : `<span class="result-placeholder">${state.mode === "products" ? "P" : "S"}</span>`}
             <span class="result-title">${esc(item.name)}</span>
+            ${item.ownership ? `<span class="status-pill">${esc(item.ownership.label)}</span>` : ""}
             ${acceptancePill(note)}
           </button>`;
         }).join("") || `<div class="muted">No results.</div>`}
@@ -1754,7 +1755,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
             const fields = (item.preview_fields || []).map((field) => `<strong>${esc(field.label)}:</strong> ${esc(field.value)}`).join("<br>");
             return `<tr>
               <td><input type="checkbox" data-select-record="${esc(item.id)}"${selected ? " checked" : ""}></td>
-              <td><button type="button" data-result-id="${esc(item.id)}">${esc(item.name)}</button><br><span class="muted">ID: ${esc(item.id)}</span></td>
+              <td><button type="button" data-result-id="${esc(item.id)}">${esc(item.name)}</button><br><span class="muted">ID: ${esc(item.id)}${item.ownership ? ` / ${esc(item.ownership.label)}` : ""}</span></td>
               <td>${acceptancePill(note)}</td>
               <td>${fields || `<span class="muted">No preview fields.</span>`}</td>
             </tr>`;
@@ -2412,6 +2413,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
           <h2>${esc(data.name)}</h2>
           <div class="summary">
             <span class="pill">ID: ${esc(data.id)}</span>
+            ${data.ownership ? `<span class="pill">${esc(data.ownership.label)}</span>` : ""}
             <span class="pill">Attributes: ${esc(data.attribute_count)}</span>
             ${data.unit ? `<span class="pill">Unit: ${esc(data.unit)}</span>` : ""}
             ${(data.categories || []).map((item) => `<span class="pill">${esc(item)}</span>`).join("")}

@@ -364,6 +364,42 @@ def filter_catalog(records: list[dict], attr_defs: dict[int, dict], selected: di
     return sorted(filters, key=lambda item: item["label"].lower())
 
 
+def product_type_id(product: dict) -> int | None:
+    raw = product.get("prodctTypeId", product.get("productTypeId"))
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def product_ownership(product: dict) -> dict:
+    type_id = product_type_id(product)
+    if type_id == 1:
+        return {"key": "own", "label": "Own product", "type_id": type_id}
+    if type_id == 2:
+        return {"key": "foreign", "label": "External product", "type_id": type_id}
+    return {"key": "unknown", "label": "Unknown ownership", "type_id": type_id}
+
+
+def product_ownership_filter(records: list[dict], selected: list[str] | None = None) -> dict:
+    selected_set = set(selected or [])
+    counts: dict[str, dict] = {}
+    for product in records:
+        ownership = product_ownership(product)
+        item = counts.setdefault(ownership["key"], {"value": ownership["key"], "label": ownership["label"], "count": 0})
+        item["count"] += 1
+    return {
+        "id": "_ownership",
+        "label": "Product ownership",
+        "type": "single",
+        "values": [
+            {"value": item["value"], "label": item["label"], "count": item["count"]}
+            for item in sorted(counts.values(), key=lambda entry: entry["label"])
+            if item["count"] or item["value"] in selected_set
+        ],
+    }
+
+
 def filter_record_values_match(values: dict[str, set[str]], selected: dict[str, list[str]]) -> bool:
     if not selected:
         return True
@@ -1205,6 +1241,9 @@ class PimData:
         validation_result = self.validation_query(question, model, limit)
         if validation_result:
             return validation_result
+        ownership_result = self.product_ownership_query(question, limit)
+        if ownership_result:
+            return ownership_result
         product_result = self.product_value_query(question, model, limit)
         if product_result:
             return product_result
@@ -1375,6 +1414,52 @@ class PimData:
             "available": True,
             "validation": True,
             "rule": {"field": field, "intent": intent},
+            "question": question,
+            "answer": answer,
+            "findings": findings,
+            "related_records": related_records,
+        }
+
+    def product_ownership_query(self, question: str, limit: int = 100) -> dict | None:
+        normalized = normalize_query_text(question)
+        if not any(token in normalized for token in ("produkt", "produkty", "product", "products")):
+            return None
+        own_tokens = ("wlasne", "wlasny", "wlasnych", "own", "company product", "firmowe", "firmy")
+        foreign_tokens = ("obce", "obcy", "obcych", "external", "foreign", "third party", "cudze")
+        wanted = ""
+        if any(token in normalized for token in own_tokens):
+            wanted = "own"
+        elif any(token in normalized for token in foreign_tokens):
+            wanted = "foreign"
+        else:
+            return None
+        findings = []
+        related_records = []
+        checked = 0
+        for product in self.products:
+            checked += 1
+            ownership = product_ownership(product)
+            if ownership["key"] != wanted:
+                continue
+            detail = self.product_detail(int(product["Id"]), compact=True)
+            findings.append(
+                {
+                    "type": "product",
+                    "id": detail["id"],
+                    "name": detail["name"],
+                    "field": "Product ownership",
+                    "issue": "matched",
+                    "message": f"{ownership['label']} (prodctTypeId={ownership.get('type_id')})",
+                }
+            )
+            related_records.append({"type": "product", "id": detail["id"], "name": detail["name"], "mode": "products", "kind": "detail"})
+            if len(findings) >= limit:
+                break
+        answer = f"Data query: checked {checked} products and selected {len(findings)} {wanted} products."
+        return {
+            "available": True,
+            "validation": True,
+            "query_type": "product_ownership",
             "question": question,
             "answer": answer,
             "findings": findings,
@@ -1705,18 +1790,21 @@ class PimData:
     def list_products(self, query: str = "", filters: dict[str, list[str]] | None = None) -> dict:
         query = query.lower().strip()
         filters = filters or {}
+        ownership_filter = filters.pop("_ownership", [])
         items = []
         query_records = []
         for product in self.products:
             detail = self.product_detail(int(product["Id"]), compact=True)
-            haystack = " ".join(str(value) for value in [detail["name"], detail.get("unit"), *detail.get("categories", [])]).lower()
+            haystack = " ".join(str(value) for value in [detail["name"], detail.get("unit"), detail.get("ownership", {}).get("label"), *detail.get("categories", [])]).lower()
             if query and query not in haystack:
                 continue
             query_records.append(product)
+            if ownership_filter and product_ownership(product)["key"] not in ownership_filter:
+                continue
             if not matches_filters(product, self.product_attr_defs, filters):
                 continue
             items.append(detail)
-        return {"items": items, "filters": filter_catalog(query_records, self.product_attr_defs, filters)}
+        return {"items": items, "filters": [product_ownership_filter(query_records, ownership_filter), *filter_catalog(query_records, self.product_attr_defs, filters)]}
 
     def product_detail(self, product_id: int, compact: bool = False) -> dict:
         product = self.product_index[product_id]
@@ -1736,6 +1824,7 @@ class PimData:
         result = {
             "id": product_id,
             "name": product_name(product, self.product_attr_defs, self.product_name_attribute_ids),
+            "ownership": product_ownership(product),
             "unit": unit,
             "categories": categories,
             "attribute_count": len(attrs),
