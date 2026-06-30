@@ -529,6 +529,19 @@
       color: #b42318;
       font-weight: 800;
     }
+    .loaded-preview-badge {
+      display: inline-block;
+      width: auto;
+      flex: 0 0 auto;
+      padding: 2px 6px;
+      border: 1px solid #fecdca;
+      border-radius: 4px;
+      background: #fff1f0;
+      color: #b42318;
+      font-size: 11px;
+      font-weight: 800;
+      line-height: 1.2;
+    }
     .edited-value {
       color: #b42318;
       font-weight: 800;
@@ -2589,10 +2602,10 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       if (!fieldKey && isLoadedDataPreview(recordType, data.id)) {
         return `<div class="correction-panel loaded-data-preview" data-correction-panel data-record-type="${esc(recordType)}" data-record-id="${esc(data.id)}">
           <div class="field">
-            <div class="field-label">Podgląd wczytanych danych</div>
-            <div class="field-value muted">Pokazujesz oryginalne wartości z wczytanych plików. W tym trybie edycja jest wyłączona.</div>
+            <div class="field-label">Loaded data preview</div>
+            <div class="field-value muted">Original values from the imported files are shown. Editing is disabled in this preview.</div>
           </div>
-          <button type="button" data-disable-loaded-preview>Wyłącz podgląd i wróć do edycji</button>
+          <button type="button" data-disable-loaded-preview>Exit preview and continue editing</button>
         </div>`;
       }
       return `<div class="correction-panel" data-correction-panel data-record-type="${esc(recordType)}" data-record-id="${esc(data.id)}" data-record-name="${esc(data.name)}" data-field-key="${esc(fieldKey)}" data-field-label="${esc(fieldLabel)}" data-field-current="${esc(fieldCurrent)}">
@@ -2743,7 +2756,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
           <header>
             <strong>Object correction state (${patches.length})</strong>
             <div class="preview-actions">
-              <button type="button" data-enable-loaded-preview>Podgląd wczytanych danych</button>
+              <button type="button" data-enable-loaded-preview>Loaded data preview</button>
               <button type="button" data-revert-record-patches>Restore object original values</button>
             </div>
           </header>
@@ -2832,9 +2845,11 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
     }
 
     function fieldNoteButton(recordType, data, fieldKey, fieldLabel, currentValue = "") {
-      if (isLoadedDataPreview(recordType, data?.id)) return "";
       if (!data || !fieldKey || !fieldLabel) return "";
       const activePatch = state.patchesByKey[patchKey(recordType, data.id, fieldKey)];
+      if (isLoadedDataPreview(recordType, data.id)) {
+        return activePatch ? `<span class="loaded-preview-badge" title="Correction exists. Corrected value: ${esc(displayPatchValue(activePatch.new_value ?? ""))}">Correction</span>` : "";
+      }
       return `<button class="field-note-button" type="button"
         title="Edit data value and add note for this field"
         data-field-note
