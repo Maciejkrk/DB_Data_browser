@@ -1408,6 +1408,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
           <div class="preview-actions">
             <button type="button" data-save-project>Save project</button>
             <button type="button" data-export-project>Export project package</button>
+            <button type="button" data-export-corrected>Export corrected data ZIP</button>
             <input id="projectImportInput" type="file" accept=".json" hidden>
             <button type="button" data-import-project>Import project package</button>
           </div>
@@ -1418,6 +1419,9 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       document.querySelector("[data-save-project]").addEventListener("click", saveProject);
       document.querySelector("[data-export-project]").addEventListener("click", () => {
         window.location.href = "/api/project/export";
+      });
+      document.querySelector("[data-export-corrected]").addEventListener("click", () => {
+        window.location.href = "/api/export/corrected-data.zip";
       });
       document.querySelector("[data-import-project]").addEventListener("click", () => $("projectImportInput").click());
       $("projectImportInput").addEventListener("change", importProjectPackage);
@@ -2490,6 +2494,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       const fieldLabel = field.label || "";
       return `<div class="correction-panel" data-correction-panel data-record-type="${esc(recordType)}" data-record-id="${esc(data.id)}" data-record-name="${esc(data.name)}" data-field-key="${esc(fieldKey)}" data-field-label="${esc(fieldLabel)}">
         ${fieldLabel ? `<div class="field"><div class="field-label">Field</div><div class="field-value">${esc(fieldLabel)}</div></div>` : ""}
+        ${fieldLabel ? `<div data-patch-editor class="field"><div class="field-label">Data correction</div><div class="field-value muted">Loading correction state...</div></div>` : ""}
         ${fieldLabel ? "" : `<label><input type="checkbox" data-record-accepted> Accepted</label>`}
         <label><input type="checkbox" data-correction-required> Requires correction</label>
         <label><input type="checkbox" data-correction-resolved> Corrected / resolved</label>
@@ -2507,12 +2512,14 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       const fieldKey = panel.dataset.fieldKey || "";
       const fieldLabel = panel.dataset.fieldLabel || "";
       const note = await api(`/api/notes/${recordType}/${data.id}${fieldKey ? `?field_key=${encodeURIComponent(fieldKey)}` : ""}`);
+      const patch = fieldKey ? await api(`/api/patches/${recordType}/${data.id}?field_key=${encodeURIComponent(fieldKey)}`) : null;
       const acceptedInput = panel.querySelector("[data-record-accepted]");
       if (acceptedInput) acceptedInput.checked = Boolean(note.accepted);
       panel.querySelector("[data-correction-required]").checked = Boolean(note.requires_correction);
       panel.querySelector("[data-correction-resolved]").checked = Boolean(note.resolved);
       panel.querySelector("[data-correction-comment]").value = note.comment || "";
       renderAttachments(panel, note.attachments || []);
+      if (patch) renderPatchEditor(panel, patch, { recordType, data, fieldKey, fieldLabel });
       panel.querySelector("[data-save-correction]").addEventListener("click", async () => {
         const attachment = await selectedAttachmentPayload(panel.querySelector("[data-correction-attachment]"));
         const payload = {
@@ -2534,6 +2541,85 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
         await refreshNotesIndex();
         await refreshProjectProgress();
       });
+    }
+
+    function renderPatchEditor(panel, patch, context) {
+      const host = panel.querySelector("[data-patch-editor]");
+      if (!host) return;
+      const info = patch.field_info || {};
+      const original = patch.original_value ?? info.current_value ?? "";
+      const current = patch.active ? patch.new_value : original;
+      host.innerHTML = `
+        <div class="field-label">Data correction</div>
+        <div class="field-value">
+          <div><strong>Before:</strong> ${esc(original)}</div>
+          <div><strong>After:</strong> ${patch.active ? esc(patch.new_value) : `<span class="muted">No active correction</span>`}</div>
+          ${patchInput(info, current)}
+          <div class="preview-actions">
+            <button type="button" data-save-patch>Save data correction</button>
+            ${patch.active ? `<button type="button" data-revert-patch>Restore original</button>` : ""}
+          </div>
+          <div class="muted" data-patch-status>${patch.active ? "Correction is active and will be included in corrected export." : "Original data is unchanged."}</div>
+        </div>
+      `;
+      host.querySelector("[data-save-patch]").addEventListener("click", async () => {
+        const input = host.querySelector("[data-patch-value]");
+        const newValue = patchInputValue(input, info);
+        const saved = await apiPost("/api/patches", {
+          record_type: context.recordType,
+          record_id: context.data.id,
+          record_name: context.data.name,
+          field_key: context.fieldKey,
+          field_label: context.fieldLabel,
+          new_value: newValue,
+        });
+        renderPatchEditor(panel, saved, context);
+      });
+      const revertButton = host.querySelector("[data-revert-patch]");
+      if (revertButton) {
+        revertButton.addEventListener("click", async () => {
+          const reverted = await apiPost("/api/patches/revert", { key: patch.key });
+          renderPatchEditor(panel, { ...patch, ...reverted, active: false, new_value: original }, context);
+        });
+      }
+    }
+
+    function patchInput(info, value) {
+      const inputType = info.input_type || "text";
+      if (inputType === "select") {
+        return `<label>New value
+          <select data-patch-value>
+            ${(info.options || []).map((option) => `<option value="${esc(option.id)}"${String(option.id) === String(value) || option.label === value ? " selected" : ""}>${esc(option.label)}</option>`).join("")}
+          </select>
+        </label>`;
+      }
+      if (inputType === "multi") {
+        const selected = new Set(Array.isArray(value) ? value.map(String) : String(value || "").split("|").map((item) => item.trim()).filter(Boolean));
+        return `<div>New value
+          ${(info.options || []).map((option) => `
+            <label class="filter-option">
+              <input type="checkbox" data-patch-value data-patch-multi value="${esc(option.id)}"${selected.has(String(option.id)) || selected.has(option.label) ? " checked" : ""}>
+              <span>${esc(option.label)}</span>
+            </label>
+          `).join("") || `<input data-patch-value value="${esc(value ?? "")}">`}
+        </div>`;
+      }
+      if (inputType === "boolean") {
+        return `<label><input type="checkbox" data-patch-value${value === true || String(value).toLowerCase() === "true" ? " checked" : ""}> New value</label>`;
+      }
+      return `<label>New value
+        <input data-patch-value type="${inputType === "number" ? "number" : "text"}" value="${esc(value ?? "")}">
+      </label>`;
+    }
+
+    function patchInputValue(input, info) {
+      if (!input) return "";
+      if ((info.input_type || "") === "multi") {
+        const selected = [...input.closest("[data-patch-editor]").querySelectorAll("[data-patch-multi]:checked")].map((item) => item.value);
+        return selected.length ? selected : input.value;
+      }
+      if ((info.input_type || "") === "boolean") return input.checked;
+      return input.value;
     }
 
     function fieldNoteButton(recordType, data, fieldKey, fieldLabel) {

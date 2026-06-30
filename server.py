@@ -13,6 +13,7 @@ import re
 import socket
 import time
 import unicodedata
+import zipfile
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
@@ -25,6 +26,7 @@ NOTES_FILE = "browser_corrections.json"
 PROJECT_FILE = "browser_review_project.json"
 ATTACHMENTS_DIR = "correction_attachments"
 VALIDATION_MODEL_FILE = "browser_validation_model.json"
+DATA_PATCHES_FILE = "browser_data_patches.json"
 MAX_JSON_BODY_BYTES = 10 * 1024 * 1024
 MAX_UPLOAD_BYTES = 250 * 1024 * 1024
 MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
@@ -83,6 +85,37 @@ def read_json_body(handler) -> dict:
 def write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def typed_payload_value(value: object, attr_def: dict | None = None) -> dict:
+    attr_type = normalize_query_text((attr_def or {}).get("AttributeType"))
+    if attr_type in {"boolean", "checkbox", "checkboxes"}:
+        if isinstance(value, bool):
+            return {"BooleanValue": value}
+        text = normalize_query_text(value)
+        return {"BooleanValue": text in {"1", "true", "yes", "tak", "y"}}
+    if attr_type in {"number", "decimal", "float", "double", "integer", "int"}:
+        number = number_or_none(value)
+        if number is not None:
+            return {"NumberValue": number}
+    if attr_type in {"select", "radio", "one of many", "one_of_many"}:
+        raw = str(value or "").strip()
+        for option in (attr_def or {}).get("AttributeOptions") or []:
+            option_text = str(option.get("OptionName") or option.get("OptionValue") or option.get("Id"))
+            if raw == str(option.get("Id")) or normalize_query_text(raw) == normalize_query_text(option_text):
+                return {"IntValue": option.get("Id")}
+        number = number_or_none(raw)
+        if number is not None:
+            return {"IntValue": int(number)}
+    return {"varcharValue": "" if value is None else str(value)}
+
+
+def apply_typed_value(target: dict, value: object, attr_def: dict | None = None) -> None:
+    for key in ("varcharValue", "TextValue", "IntValue", "IntValue2", "NumberValue", "BooleanValue"):
+        if key in target:
+            target[key] = None if key != "BooleanValue" else False
+    for key, typed_value in typed_payload_value(value, attr_def).items():
+        target[key] = typed_value
 
 
 def notes_as_csv(notes: list[dict]) -> str:
@@ -1095,6 +1128,41 @@ def parse_numeric_conditions(query: str) -> list[dict]:
     return conditions
 
 
+def numeric_comparisons(query: str) -> list[dict]:
+    normalized = normalize_query_text(query)
+    comparisons = []
+    pattern = r"(>=|<=|>|<|=|:)\s*(-?\d+(?:[\.,]\d+)?)"
+    for operator, raw_value in re.findall(pattern, normalized):
+        value = number_or_none(raw_value)
+        if value is not None:
+            comparisons.append({"operator": "=" if operator == ":" else operator, "value": value})
+    word_patterns = [
+        (r"(?:mniejsz\w* niz|less than|below|ponizej)\s*(-?\d+(?:[\.,]\d+)?)", "<"),
+        (r"(?:wieksz\w* niz|greater than|above|powyzej)\s*(-?\d+(?:[\.,]\d+)?)", ">"),
+        (r"(?:nie wieksz\w* niz|at most|maksymalnie)\s*(-?\d+(?:[\.,]\d+)?)", "<="),
+        (r"(?:nie mniejsz\w* niz|at least|minimum|minimalnie)\s*(-?\d+(?:[\.,]\d+)?)", ">="),
+    ]
+    for pattern, operator in word_patterns:
+        for raw_value in re.findall(pattern, normalized):
+            value = number_or_none(raw_value)
+            if value is not None:
+                comparisons.append({"operator": operator, "value": value})
+    return comparisons
+
+
+def numeric_conditions_for_field(query: str, field: dict) -> list[dict]:
+    named = [
+        condition for condition in parse_numeric_conditions(query)
+        if field_matches_query(field, condition.get("name") or "")
+    ]
+    if named:
+        return named
+    comparisons = numeric_comparisons(query)
+    if comparisons and field_matches_query(field, query):
+        return [{"name": field["key"], **comparisons[0]}]
+    return []
+
+
 def parse_text_conditions(query: str) -> list[dict]:
     normalized = normalize_query_text(query)
     conditions = []
@@ -1488,6 +1556,7 @@ class PimData:
         if not fields:
             return None
         field = fields[0]
+        numeric_conditions = numeric_conditions_for_field(question, field)
         if not numeric_conditions:
             numeric_conditions = implicit_numeric_conditions_for_field(question, field)
         has_positive_intent = any(token in normalized for token in ("ma ", "maja", "maja wartosc", "wartosc", "wartosci", "z ", "gdzie"))
@@ -1855,6 +1924,133 @@ class PimData:
             }
         )
         return result
+
+    def edit_field_info(self, record_type: str, record_id: int, field_key: str) -> dict:
+        record, attr_defs = self.edit_record(record_type, record_id)
+        record_name = self.edit_record_name(record_type, record_id)
+        if record_type == "color":
+            parameter = self.find_color_parameter(record, field_key)
+            value = first_parameter_value(parameter) if parameter else None
+            parameter_name = parameter.get("parameterName") if parameter else field_key.split(":", 1)[-1]
+            return {
+                "record_name": record_name,
+                "field_label": parameter_name,
+                "current_value": value,
+                "input_type": "text",
+                "options": [],
+                "field_type": "parameter",
+            }
+        attr = self.find_edit_attribute(record, attr_defs, field_key)
+        attr_id = int(attr.get("AttributeId") or 0) if attr else 0
+        attr_def = attr_defs.get(attr_id)
+        return {
+            "record_name": record_name,
+            "field_label": attr_label(attr_def, attr_id) if attr_id else field_key,
+            "current_value": first_value(attr, attr_def) if attr else None,
+            "input_type": self.edit_input_type(attr_def),
+            "options": [
+                {"id": option.get("Id"), "label": str(option.get("OptionName") or option.get("OptionValue") or option.get("Id"))}
+                for option in (attr_def or {}).get("AttributeOptions") or []
+            ],
+            "field_type": str((attr_def or {}).get("AttributeType") or ""),
+            "attribute_id": attr_id,
+        }
+
+    def edit_record(self, record_type: str, record_id: int) -> tuple[dict, dict[int, dict]]:
+        if record_type == "product":
+            return self.product_index[record_id], self.product_attr_defs
+        if record_type == "system":
+            return self.element_index[record_id], self.element_attr_defs
+        if record_type == "color":
+            return self.color_index[record_id], {}
+        raise ValueError("Unsupported editable record type")
+
+    def edit_record_name(self, record_type: str, record_id: int) -> str:
+        if record_type == "product":
+            return product_name(self.product_index[record_id], self.product_attr_defs, self.product_name_attribute_ids)
+        if record_type == "system":
+            return element_name(self.element_index[record_id], self.element_attr_defs)
+        if record_type == "color":
+            return self.color_detail(record_id, compact=True)["name"]
+        return str(record_id)
+
+    def edit_input_type(self, attr_def: dict | None) -> str:
+        attr_type = normalize_query_text((attr_def or {}).get("AttributeType"))
+        if attr_type in {"select", "radio", "one of many", "one_of_many"}:
+            return "select"
+        if attr_type in {"checkboxes", "many of many", "many_of_many"}:
+            return "multi"
+        if attr_type in {"boolean", "checkbox"}:
+            return "boolean"
+        if attr_type in {"number", "decimal", "float", "double", "integer", "int"}:
+            return "number"
+        return "text"
+
+    def find_color_parameter(self, color: dict, field_key: str) -> dict | None:
+        parameter_name = field_key.split(":", 1)[-1] if field_key.startswith("parameter:") else field_key
+        version = (color.get("dataVersions") or [{}])[-1]
+        for parameter in version.get("parameters") or []:
+            if normalize_query_text(parameter.get("parameterName")) == normalize_query_text(parameter_name):
+                return parameter
+        return None
+
+    def find_edit_attribute(self, record: dict, attr_defs: dict[int, dict], field_key: str) -> dict | None:
+        attrs = latest_attrs(record)
+        row_match = re.search(r":row:([^:]+):column:(\d+)", field_key)
+        if row_match:
+            row = int(number_or_none(row_match.group(1)) or 0)
+            attr_id = int(row_match.group(2))
+            return next((attr for attr in attrs if int(attr.get("AttributeId") or 0) == attr_id and int(attr.get("RowI") or 0) == row), None)
+        selector_match = re.match(r"selector:(\d+)", field_key)
+        if selector_match:
+            attr_id = int(selector_match.group(1))
+            return next((attr for attr in attrs if int(attr.get("AttributeId") or 0) == attr_id and int(attr.get("ParentAttributeId") or 0) == 0), None)
+        label = field_key.split(":", 1)[-1] if ":" in field_key else field_key
+        label = label.rsplit(":", 1)[-1] if ":row:" in field_key else label
+        for attr in attrs:
+            attr_id = int(attr.get("AttributeId") or 0)
+            attr_def = attr_defs.get(attr_id)
+            if normalize_query_text(attr_label(attr_def, attr_id)) == normalize_query_text(label):
+                return attr
+        return None
+
+    def corrected_payload(self, filename: str, patches: list[dict]) -> dict:
+        payload = load_json(self.data_dir / filename)
+        if filename == "products.json":
+            records = payload.get("products") or []
+            record_type = "product"
+            attr_defs = self.product_attr_defs
+        elif filename == "building_elements.json":
+            records = payload.get("buildingElements") or []
+            record_type = "system"
+            attr_defs = self.element_attr_defs
+        elif filename == "colors.json":
+            records = payload.get("colors") or []
+            record_type = "color"
+            attr_defs = {}
+        else:
+            return payload
+        by_id = {int(item["Id"]): item for item in records if item.get("Id") is not None}
+        for patch in patches:
+            if patch.get("record_type") != record_type:
+                continue
+            record = by_id.get(int(patch.get("record_id") or 0))
+            if not record:
+                continue
+            self.apply_patch_to_record(record_type, record, attr_defs, patch)
+        return payload
+
+    def apply_patch_to_record(self, record_type: str, record: dict, attr_defs: dict[int, dict], patch: dict) -> None:
+        if record_type == "color":
+            parameter = self.find_color_parameter(record, str(patch.get("field_key") or ""))
+            if parameter:
+                apply_typed_value(parameter, patch.get("new_value"), None)
+            return
+        attr = self.find_edit_attribute(record, attr_defs, str(patch.get("field_key") or ""))
+        if not attr:
+            return
+        attr_id = int(attr.get("AttributeId") or 0)
+        apply_typed_value(attr, patch.get("new_value"), attr_defs.get(attr_id))
 
     def build_product_color_usage(self) -> dict[str, list[dict]]:
         usage: dict[str, list[dict]] = {}
@@ -2459,6 +2655,97 @@ class ValidationModelStore:
         return {"fields": fields, "source": source}
 
 
+class DataPatchStore:
+    def __init__(self, data_dir: Path) -> None:
+        self.data_dir = data_dir
+        self.path = data_dir / DATA_PATCHES_FILE
+
+    def load(self) -> dict:
+        payload = load_json_if_exists(self.path, {"patches": []})
+        payload.setdefault("patches", [])
+        return payload
+
+    def list_patches(self) -> dict:
+        patches = sorted(self.load()["patches"], key=lambda item: item.get("updated_at", 0), reverse=True)
+        return {"items": patches, "patch_file": str(self.path)}
+
+    def get_patch(self, record_type: str, record_id: int, field_key: str) -> dict:
+        key = self.patch_key(record_type, record_id, field_key)
+        for patch in self.load()["patches"]:
+            if patch.get("key") == key:
+                return patch
+        return {
+            "key": key,
+            "record_type": record_type,
+            "record_id": record_id,
+            "field_key": field_key,
+            "field_label": "",
+            "original_value": None,
+            "new_value": "",
+            "active": False,
+        }
+
+    def save_patch(self, payload: dict, data: PimData) -> dict:
+        record_type = str(payload.get("record_type") or "")
+        record_id = int(payload.get("record_id") or 0)
+        field_key = str(payload.get("field_key") or "").strip()
+        if not record_type or not record_id or not field_key:
+            raise ValueError("Patch requires record type, record id and field key")
+        current = self.get_patch(record_type, record_id, field_key)
+        field_info = data.edit_field_info(record_type, record_id, field_key)
+        original_value = current.get("original_value")
+        if original_value is None:
+            original_value = field_info.get("current_value")
+        now = int(time.time())
+        patch = {
+            **current,
+            "key": self.patch_key(record_type, record_id, field_key),
+            "record_type": record_type,
+            "record_id": record_id,
+            "record_name": str(payload.get("record_name") or field_info.get("record_name") or ""),
+            "field_key": field_key,
+            "field_label": str(payload.get("field_label") or field_info.get("field_label") or ""),
+            "field_info": field_info,
+            "original_value": original_value,
+            "new_value": payload.get("new_value"),
+            "comment": str(payload.get("comment") or "").strip(),
+            "active": True,
+            "updated_at": now,
+        }
+        data_payload = self.load()
+        data_payload["patches"] = [item for item in data_payload["patches"] if item.get("key") != patch["key"]]
+        data_payload["patches"].append(patch)
+        write_json(self.path, data_payload)
+        return patch
+
+    def revert_patch(self, payload: dict) -> dict:
+        record_type = str(payload.get("record_type") or "")
+        record_id = int(payload.get("record_id") or 0)
+        field_key = str(payload.get("field_key") or "").strip()
+        key = str(payload.get("key") or self.patch_key(record_type, record_id, field_key))
+        data_payload = self.load()
+        patches = []
+        reverted = None
+        for patch in data_payload["patches"]:
+            if patch.get("key") == key:
+                patch = {**patch, "active": False, "reverted_at": int(time.time()), "updated_at": int(time.time())}
+                reverted = patch
+            patches.append(patch)
+        data_payload["patches"] = patches
+        write_json(self.path, data_payload)
+        return reverted or {"key": key, "active": False}
+
+    def active_patches(self, record_type: str | None = None) -> list[dict]:
+        patches = [item for item in self.load()["patches"] if item.get("active")]
+        if record_type:
+            patches = [item for item in patches if item.get("record_type") == record_type]
+        return patches
+
+    @staticmethod
+    def patch_key(record_type: str, record_id: int, field_key: str) -> str:
+        return f"{record_type}:{record_id}:field:{safe_filename(field_key)}"
+
+
 def project_progress(notes: list[dict], data: PimData | None) -> dict:
     totals = {
         "product": len(data.products) if data else 0,
@@ -2593,6 +2880,7 @@ class DataStore:
         self.notes = NotesStore(data_dir)
         self.project = ReviewProjectStore(data_dir, self.notes)
         self.validation_model = ValidationModelStore(data_dir)
+        self.patches = DataPatchStore(data_dir)
         self.ai = AiAgent()
         self.reload()
 
@@ -2652,6 +2940,23 @@ class DataStore:
             self.data = PimData(self.data_dir)
         else:
             self.data = None
+
+    def corrected_payload(self, filename: str) -> dict:
+        if not self.data:
+            raise ValueError("Data source is not ready")
+        return self.data.corrected_payload(filename, self.patches.active_patches())
+
+    def corrected_zip(self) -> bytes:
+        output = io.BytesIO()
+        with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+            for filename in ("products.json", "building_elements.json", "colors.json"):
+                path = self.data_dir / filename
+                if not path.exists():
+                    continue
+                body = json.dumps(self.corrected_payload(filename), ensure_ascii=False, indent=2).encode("utf-8")
+                archive.writestr(filename, body)
+            archive.writestr("browser_data_patches.json", json.dumps(self.patches.load(), ensure_ascii=False, indent=2).encode("utf-8"))
+        return output.getvalue()
 
 
 def make_handler(data: PimData):
@@ -2773,6 +3078,12 @@ def make_store_handler(store: DataStore):
                 if parsed.path == "/api/records/accept":
                     self.send_json(store.notes.bulk_accept(read_json_body(self)))
                     return
+                if parsed.path == "/api/patches":
+                    self.send_json(store.patches.save_patch(read_json_body(self), self.ready_data()))
+                    return
+                if parsed.path == "/api/patches/revert":
+                    self.send_json(store.patches.revert_patch(read_json_body(self)))
+                    return
                 if parsed.path == "/api/validation/model":
                     self.send_json(store.validation_model.save(read_json_body(self)))
                     return
@@ -2818,11 +3129,32 @@ def make_store_handler(store: DataStore):
                     return
                 elif parsed.path == "/api/notes":
                     payload = store.notes.list_notes()
+                elif parsed.path == "/api/patches":
+                    payload = store.patches.list_patches()
+                elif parsed.path.startswith("/api/patches/"):
+                    _, record_type, record_id = parsed.path.rsplit("/", 2)
+                    field_key = qs.get("field_key", [""])[0]
+                    payload = store.patches.get_patch(unquote(record_type), int(unquote(record_id)), field_key)
+                    if not payload.get("active"):
+                        field_info = self.ready_data().edit_field_info(unquote(record_type), int(unquote(record_id)), field_key)
+                        payload = {**payload, "field_info": field_info, "field_label": field_info.get("field_label"), "original_value": field_info.get("current_value")}
                 elif parsed.path == "/api/notes/export":
                     self.send_download(store.notes.load(), "browser_corrections.json")
                     return
                 elif parsed.path == "/api/notes/export.csv":
                     self.send_csv(notes_as_csv(store.notes.list_notes()["items"]), "browser_corrections.csv")
+                    return
+                elif parsed.path == "/api/export/products.json":
+                    self.send_download(store.corrected_payload("products.json"), "products.json")
+                    return
+                elif parsed.path == "/api/export/building_elements.json":
+                    self.send_download(store.corrected_payload("building_elements.json"), "building_elements.json")
+                    return
+                elif parsed.path == "/api/export/colors.json":
+                    self.send_download(store.corrected_payload("colors.json"), "colors.json")
+                    return
+                elif parsed.path == "/api/export/corrected-data.zip":
+                    self.send_binary(store.corrected_zip(), "application/zip", "corrected-data.zip")
                     return
                 elif parsed.path.startswith("/api/notes/attachment/"):
                     _, key, filename = parsed.path.rsplit("/", 2)
@@ -2932,6 +3264,14 @@ def make_store_handler(store: DataStore):
             body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def send_binary(self, body: bytes, content_type: str, filename: str):
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
             self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
