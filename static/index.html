@@ -2800,7 +2800,7 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       if (!productId) return "";
       const option = (info.options || []).find((item) => String(item.id) === productId);
       if (!option) return productId;
-      return String(option.label || productId).replace(/^\s*\d+\s*-\s*/, "");
+      return String(option.label || productId).replace(/^\s*\d+\s*[-:]\s*/, "");
     }
 
     function recordPreviewKey(recordType, recordId) {

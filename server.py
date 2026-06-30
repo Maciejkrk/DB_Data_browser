@@ -2916,9 +2916,23 @@ class DataPatchStore:
         payload.setdefault("patches", [])
         return payload
 
-    def list_patches(self) -> dict:
+    def list_patches(self, data: PimData | None = None) -> dict:
         patches = sorted(self.load()["patches"], key=lambda item: item.get("updated_at", 0), reverse=True)
+        if data:
+            patches = [self.hydrate_patch(item, data) for item in patches]
         return {"items": patches, "patch_file": str(self.path)}
+
+    def hydrate_patch(self, patch: dict, data: PimData) -> dict:
+        try:
+            field_info = data.edit_field_info(str(patch.get("record_type") or ""), int(patch.get("record_id") or 0), str(patch.get("field_key") or ""))
+        except Exception:
+            return patch
+        return {
+            **patch,
+            "field_info": field_info,
+            "field_label": patch.get("field_label") or field_info.get("field_label") or "",
+            "original_value": patch.get("original_value") if patch.get("original_value") is not None else field_info.get("current_value"),
+        }
 
     def get_patch(self, record_type: str, record_id: int, field_key: str) -> dict:
         key = self.patch_key(record_type, record_id, field_key)
@@ -3386,7 +3400,7 @@ def make_store_handler(store: DataStore):
                 elif parsed.path == "/api/notes":
                     payload = store.notes.list_notes()
                 elif parsed.path == "/api/patches":
-                    payload = store.patches.list_patches()
+                    payload = store.patches.list_patches(self.ready_data())
                 elif parsed.path.startswith("/api/patches/"):
                     _, record_type, record_id = parsed.path.rsplit("/", 2)
                     field_key = qs.get("field_key", [""])[0]
