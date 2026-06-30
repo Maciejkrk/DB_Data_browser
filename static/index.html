@@ -3002,9 +3002,36 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
 
     function attachFieldNoteButtons(root = document) {
       for (const button of root.querySelectorAll("[data-field-note]")) {
-        button.addEventListener("click", () => openFieldNoteModal(button.dataset));
+        button.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          openFieldNoteModal(button.dataset);
+        });
+      }
+      for (const button of root.querySelectorAll("[data-add-product]")) {
+        button.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          const baseKey = button.dataset.fieldBaseKey || "";
+          openFieldNoteModal({
+            ...button.dataset,
+            fieldKey: nextAppendProductKey(button.dataset.recordType, button.dataset.recordId, baseKey),
+            fieldCurrent: "",
+          });
+        });
       }
       applyPatchMarkers(root);
+    }
+
+    function nextAppendProductKey(recordType, recordId, baseKey) {
+      const prefix = `${baseKey}:slot:`;
+      const used = new Set(Object.values(state.patchesByKey)
+        .filter((patch) => patch.active && patch.record_type === String(recordType) && String(patch.record_id) === String(recordId) && String(patch.field_key || "").startsWith(prefix))
+        .map((patch) => Number(String(patch.field_key || "").split(":slot:").pop()))
+        .filter((slot) => Number.isFinite(slot) && slot > 0));
+      let slot = 1;
+      while (used.has(slot)) slot += 1;
+      return `${baseKey}:slot:${slot}`;
     }
 
     function applyPatchMarkers(root = document) {
@@ -3675,10 +3702,24 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
 
     function modelTreeNode(node, recordType = "", data = null, level = 1) {
       const rows = node.rows || [];
+      const addProductBaseKey = node.can_add_product && node.product_attribute_id
+        ? `append:array:${node.attribute_id}:parent:${encodeURIComponent(node.parent_hash || "")}:product:${node.product_attribute_id}`
+        : "";
+      const addProductButton = addProductBaseKey && data
+        ? `<button class="field-note-button" type="button"
+            title="Add another product to this variant"
+            data-add-product
+            data-record-type="${esc(recordType)}"
+            data-record-id="${esc(data.id)}"
+            data-record-name="${esc(data.name)}"
+            data-field-base-key="${esc(addProductBaseKey)}"
+            data-field-label="${esc(`Add product to ${node.label || "model array"}`)}">Add product</button>`
+        : "";
       return `<details class="model-tree-node" data-model-level="${esc(level)}"${level <= 2 ? " open" : ""}>
         <summary>
           <span>${esc(node.label || "Model array")}</span>
           <span class="muted">Level ${esc(level)} / ${esc(rows.length)} item${rows.length === 1 ? "" : "s"}</span>
+          ${addProductButton}
         </summary>
         <div class="model-tree-rows">
           ${rows.map((row) => modelTreeRow(row, recordType, data, level)).join("") || `<div class="muted">No items.</div>`}
@@ -3708,28 +3749,28 @@ ${esc(state.project?.storage?.notes_file || "")}</div>
       const key = `table:Model tree:attr_index:${field.attr_index}`;
       const raw = field.raw || {};
       const productId = raw.IntValue;
-      const productVariant = raw.IntValue2;
-      const displayValue = productId ? `${productId}${productVariant ? ` (${productVariant})` : ""}` : value;
+      const displayValue = field.display_value || (productId ? String(productId) : value);
+      const editValue = field.edit_value || (productId ? String(productId) : value);
       const valueHtml = String((field.attribute_name || "")).toLowerCase() === "product" || productId
-        ? `${productId ? `<button class="product-chip" type="button" data-linked-product-id="${esc(productId)}">${esc(field.display_value || displayValue)}</button>` : esc(field.display_value || displayValue)}`
+        ? `${productId ? `<button class="product-chip" type="button" data-linked-product-id="${esc(productId)}">${esc(displayValue)}</button>` : esc(displayValue)}`
         : esc(value);
       return `<div class="field">
         <div class="field-label"><span>${esc(label)}</span></div>
-        <div class="field-value"><span data-field-display>${valueHtml}</span> ${fieldNoteButton(recordType, data, key, label, displayValue)}</div>
+        <div class="field-value"><span data-field-display>${valueHtml}</span> ${fieldNoteButton(recordType, data, key, label, editValue)}</div>
       </div>`;
     }
 
     function productSelector(products, data = null, variant = {}, layer = {}) {
       if (!products.length) return `<span class="muted">No assigned products</span>`;
       const options = products.map((item, index) => {
-        const label = `${item.product_name || item.product_id}${item.variant ? ` / variant ${item.variant}` : ""}${item.default ? " / default" : ""}`;
+        const label = `${item.product_name || item.product_id}${item.default ? " / default" : ""}`;
         return `<option value="${index}">${esc(label)}</option>`;
       }).join("");
       const chips = products.map((item) => `
         <span class="table-cell-note">
           ${item.linked_product_id
-            ? `<button class="product-chip" type="button" data-linked-product-id="${esc(item.linked_product_id)}">${esc(item.product_name || item.product_id)}${item.variant ? `, variant ${esc(item.variant)}` : ""}</button>`
-            : `<span class="product-chip">${esc(item.product_name || item.product_id)}${item.variant ? `, variant ${esc(item.variant)}` : ""}</span>`}
+            ? `<button class="product-chip" type="button" data-linked-product-id="${esc(item.linked_product_id)}">${esc(item.product_name || item.product_id)}</button>`
+            : `<span class="product-chip">${esc(item.product_name || item.product_id)}</span>`}
           ${item.field_key ? fieldNoteButton("system", data, item.field_key, `${variant.name || "Variant"} / ${layer.name || "layer"} / product`, `${item.product_id || ""}${item.variant ? ` (${item.variant})` : ""}`) : ""}
         </span>
       `).join("");

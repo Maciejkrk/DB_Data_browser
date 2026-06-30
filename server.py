@@ -13,6 +13,7 @@ import re
 import socket
 import time
 import unicodedata
+import uuid
 import zipfile
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -1299,6 +1300,21 @@ class PimData:
     def model_tree(self, record: dict, attr_defs: dict[int, dict], root_model_id: int | None) -> list[dict]:
         attrs = latest_attrs(record)
 
+        def product_attribute_for_model(model_id: int | None) -> tuple[int | None, dict | None]:
+            if model_id is None:
+                return None, None
+            product_attrs = [
+                (int(attr_def.get("DisplayOrder") or 0), attr_id, attr_def)
+                for attr_id, attr_def in attr_defs.items()
+                if not attr_is_deleted(attr_def)
+                and int(attr_def.get("ProductModelId") or 0) == int(model_id)
+                and normalize_query_text(attr_def.get("AttributeType")) == "product"
+            ]
+            if not product_attrs:
+                return None, None
+            _, attr_id, attr_def = sorted(product_attrs)[0]
+            return attr_id, attr_def
+
         def enrich_field(item: dict) -> dict:
             attr_id = int(item.get("attribute_id") or 0)
             attr_def = attr_defs.get(attr_id) or {}
@@ -1309,8 +1325,8 @@ class PimData:
             variant_id = raw.get("IntValue2")
             linked_product = self.product_index.get(int(product_id)) if isinstance(product_id, int) else None
             label = product_name(linked_product, self.product_attr_defs, self.product_name_attribute_ids) if linked_product else str(product_id or item.get("value") or "")
-            display = f"{label} / variant {variant_id}" if variant_id else label
-            return {**item, "product_id": product_id, "product_variant": variant_id, "display_value": display}
+            edit_value = f"{product_id} ({variant_id})" if variant_id else str(product_id or "")
+            return {**item, "product_id": product_id, "product_variant": variant_id, "display_value": label, "edit_value": edit_value}
 
         def row_label(row: dict, fallback: str) -> str:
             product_field = next((item for item in row.get("values") or [] if item.get("product_id")), None)
@@ -1325,6 +1341,7 @@ class PimData:
             ]
             target_model_id = int(array_attr_def.get("TargetModelId") or 0) or None
             child_arrays = model_array_attributes(attr_defs, target_model_id)
+            product_attr_id, _ = product_attribute_for_model(target_model_id)
             row_nodes = []
             for row in rows:
                 fields = [
@@ -1345,6 +1362,9 @@ class PimData:
                 "attribute_id": array_attr_id,
                 "label": attr_label(array_attr_def, array_attr_id),
                 "target_model_id": target_model_id,
+                "parent_hash": parent_hash,
+                "can_add_product": product_attr_id is not None and bool(parent_hash),
+                "product_attribute_id": product_attr_id,
                 "rows": row_nodes,
             }
 
@@ -2042,6 +2062,23 @@ class PimData:
     def edit_field_info(self, record_type: str, record_id: int, field_key: str) -> dict:
         record, attr_defs = self.edit_record(record_type, record_id)
         record_name = self.edit_record_name(record_type, record_id)
+        append_info = self.parse_append_product_key(field_key)
+        if append_info:
+            product_attr_def = attr_defs.get(append_info["product_attribute_id"])
+            return {
+                "record_name": record_name,
+                "field_label": f"Add product to {attr_label(attr_defs.get(append_info['array_attribute_id']), append_info['array_attribute_id'])}",
+                "current_value": "",
+                "input_type": "product",
+                "options": self.product_edit_options(),
+                "field_type": "Product",
+                "attribute_id": append_info["product_attribute_id"],
+                "append": True,
+                "array_attribute_id": append_info["array_attribute_id"],
+                "product_attribute_id": append_info["product_attribute_id"],
+                "parent_hash": append_info["parent_hash"],
+                "field_label_raw": attr_label(product_attr_def, append_info["product_attribute_id"]),
+            }
         if record_type == "color":
             parameter = self.find_color_parameter(record, field_key)
             value = first_parameter_value(parameter) if parameter else None
@@ -2063,13 +2100,7 @@ class PimData:
             for option in (attr_def or {}).get("AttributeOptions") or []
         ]
         if input_type == "product":
-            options = [
-                {
-                    "id": product_id,
-                    "label": f"{product_id} - {product_name(self.product_index[product_id], self.product_attr_defs, self.product_name_attribute_ids)}",
-                }
-                for product_id in sorted(self.product_index)
-            ]
+            options = self.product_edit_options()
         return {
             "record_name": record_name,
             "field_label": attr_label(attr_def, attr_id) if attr_id else field_key,
@@ -2078,6 +2109,27 @@ class PimData:
             "options": options,
             "field_type": str((attr_def or {}).get("AttributeType") or ""),
             "attribute_id": attr_id,
+        }
+
+    def product_edit_options(self) -> list[dict]:
+        return [
+            {
+                "id": product_id,
+                "label": f"{product_id} - {product_name(self.product_index[product_id], self.product_attr_defs, self.product_name_attribute_ids)}",
+            }
+            for product_id in sorted(self.product_index)
+        ]
+
+    @staticmethod
+    def parse_append_product_key(field_key: str) -> dict | None:
+        match = re.match(r"append:array:(\d+):parent:([^:]+):product:(\d+)(?::slot:(\d+))?$", str(field_key or ""))
+        if not match:
+            return None
+        return {
+            "array_attribute_id": int(match.group(1)),
+            "parent_hash": unquote(match.group(2)),
+            "product_attribute_id": int(match.group(3)),
+            "slot": int(match.group(4) or 0),
         }
 
     def edit_record(self, record_type: str, record_id: int) -> tuple[dict, dict[int, dict]]:
@@ -2181,6 +2233,10 @@ class PimData:
             if parameter:
                 apply_typed_value(parameter, patch.get("new_value"), None)
             return
+        append_info = self.parse_append_product_key(str(patch.get("field_key") or ""))
+        if append_info:
+            self.append_product_assignment(record, append_info, patch.get("new_value"))
+            return
         attr = self.find_edit_attribute(record, attr_defs, str(patch.get("field_key") or ""))
         if not attr:
             return
@@ -2189,6 +2245,43 @@ class PimData:
             apply_product_value(attr, patch.get("new_value"))
             return
         apply_typed_value(attr, patch.get("new_value"), attr_defs.get(attr_id))
+
+    def append_product_assignment(self, record: dict, append_info: dict, value: object) -> None:
+        attrs = latest_attrs(record)
+        array_attr_id = int(append_info["array_attribute_id"])
+        parent_hash = str(append_info["parent_hash"])
+        product_attr_id = int(append_info["product_attribute_id"])
+        if not parent_hash:
+            return
+        existing_same_parent = [
+            attr for attr in attrs
+            if int(attr.get("ParentAttributeId") or 0) == array_attr_id and str(attr.get("parentHash") or "") == parent_hash
+        ]
+        existing_products = [
+            attr for attr in existing_same_parent
+            if int(attr.get("AttributeId") or 0) == product_attr_id
+        ]
+        next_row = max([int(attr.get("RowI") or 0) for attr in existing_same_parent] or [-1]) + 1
+        template = existing_products[0] if existing_products else next(
+            (attr for attr in attrs if int(attr.get("AttributeId") or 0) == product_attr_id),
+            {},
+        )
+        new_attr = dict(template)
+        new_attr.update(
+            {
+                "AttributeId": product_attr_id,
+                "ParentAttributeId": array_attr_id,
+                "RowI": next_row,
+                "hash": uuid.uuid4().hex,
+                "parentHash": parent_hash,
+                "varcharValue": "",
+                "TextValue": None,
+                "NumberValue": None,
+                "BooleanValue": False,
+            }
+        )
+        apply_product_value(new_attr, value)
+        attrs.append(new_attr)
 
     def build_product_color_usage(self) -> dict[str, list[dict]]:
         usage: dict[str, list[dict]] = {}
